@@ -8,29 +8,31 @@ library(tidyverse)
 library(tidyverse)
 library(rstatix)
 library(ez)
-data <- read.xlsx("C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\Datalist_260109_clean.xlsx", 
-                  sheet = "工作表2")
-#基本資訊與分組來源
-ID_list <-read.xlsx("C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\受試者進度紀錄與基本資料260117_clean.xlsx", 
-                    sheet = "完整資料") 
+data <- read.xlsx("C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\Datalist_260109_clean.xlsx",
+  sheet = "工作表2"
+)
+# 基本資訊與分組來源
+ID_list <- read.xlsx("C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\受試者進度紀錄與基本資料260117_clean.xlsx",
+  sheet = "完整資料"
+)
 # 設定檔案匯出路徑與名稱
 output_file <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\report_stats_260131_clean.xlsx"
 output_path <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026"
 
 # 定義所有 PSG 生理指標
 measures_to_analyze <- c(
-  "TRT_min", "TST_min", "SE", "SL_min", "REML_min", "WASO_min", 
-  "REM%", "N1%", "N2%", "N3%", "REM_min", 
-  "N1_min", "N2_min", "N3_min", "ArousalIndex", "Min_O2","AHI", "AI", "HI", "ODI",
+  "TRT_min", "TST_min", "SE", "SL_min", "REML_min", "WASO_min",
+  "REM%", "N1%", "N2%", "N3%", "REM_min",
+  "N1_min", "N2_min", "N3_min", "ArousalIndex", "Min_O2", "AHI", "AI", "HI", "ODI",
   "NonSupine_AHI", "REM_AHI", "NREM_AHI", "Mean_HR"
 )
 
-#全部數值
+# 全部數值
 # measures_to_analyze <- c(
-#   "AHI", "TRT_min", "TST_min", "SE", "SL_min", "REML_min", "WASO_min", 
-#   "Snore_pct", "PLMS", "ODI", "REM%", "N1%", "N2%", "N3%", "REM_min", 
-#   "N1_min", "N2_min", "N3_min", "ArousalIndex", "Min_O2", "AI", "HI", 
-#   "Supine_AHI", "NonSupine_AHI", "REM_AHI", "NREM_AHI", "Mean_HR", 
+#   "AHI", "TRT_min", "TST_min", "SE", "SL_min", "REML_min", "WASO_min",
+#   "Snore_pct", "PLMS", "ODI", "REM%", "N1%", "N2%", "N3%", "REM_min",
+#   "N1_min", "N2_min", "N3_min", "ArousalIndex", "Min_O2", "AI", "HI",
+#   "Supine_AHI", "NonSupine_AHI", "REM_AHI", "NREM_AHI", "Mean_HR",
 #   "Max_HR_TRT", "Min_HR_TST", "Max_HR_TST"
 # )
 
@@ -40,8 +42,8 @@ measures_to_analyze <- c(
 # ==================================
 
 # 整理基本資訊並與生理數據合併
-id_info <- ID_list %>% 
-  select(ID, Group, Sex, Age,BMI) %>% 
+id_info <- ID_list %>%
+  select(ID, Group, Sex, Age, BMI) %>%
   mutate(ID = as.character(ID))
 
 merged_data <- data %>%
@@ -49,8 +51,16 @@ merged_data <- data %>%
   left_join(id_info, by = "ID") %>%
   mutate(
     Trail = factor(Trail, levels = c(0, 1, 2), labels = c("Interview", "Pre", "Post")),
-    Group = as.factor(Group)
-  )
+    Group_clean = toupper(trimws(as.character(Group))),
+    Group = case_when(
+      Group_clean %in% c("A", "0", "CONTROL", "C", "\uff21") ~ "placebo",
+      Group_clean %in% c("B", "1", "EXP", "E", "\uff22") ~ "PS150",
+      TRUE ~ NA_character_
+    ),
+    Group = factor(Group, levels = c("placebo", "PS150"))
+  ) %>%
+  select(-Group_clean) %>%
+  filter(!is.na(Group))
 
 # 轉換為長格式 (Long Format)
 long_measures <- merged_data %>%
@@ -85,35 +95,53 @@ normality_results <- long_measures %>%
 # A. 無母數 (Friedman Test)
 friedman_results <- long_measures %>%
   group_by(Group, measure, ID) %>%
-  filter(n() == 3) %>% ungroup() %>%
+  filter(n() == 3) %>%
+  ungroup() %>%
   group_by(Group, measure) %>%
   do({
     temp <- .
-    res <- tryCatch({ friedman_test(data = temp, score ~ Trail | ID) }, error = function(e) NULL)
-    if(is.null(res)) data.frame() else as.data.frame(res)
-  }) %>% ungroup() %>% add_significance()
+    res <- tryCatch(
+      {
+        friedman_test(data = temp, score ~ Trail | ID)
+      },
+      error = function(e) NULL
+    )
+    if (is.null(res)) data.frame() else as.data.frame(res)
+  }) %>%
+  ungroup() %>%
+  add_significance()
 
 # B. 有母數 (One-way RM ANOVA)
 oneway_rm_anova_results <- long_measures %>%
   group_by(Group, measure, ID) %>%
-  filter(n() == 3) %>% ungroup() %>%
+  filter(n() == 3) %>%
+  ungroup() %>%
   group_by(Group, measure) %>%
   do({
     temp <- .
-    res <- tryCatch({ anova_test(data = temp, dv = score, wid = ID, within = Trail) }, error = function(e) NULL)
-    if(is.null(res)) data.frame() else as.data.frame(res)
-  }) %>% ungroup() %>% add_significance()
+    res <- tryCatch(
+      {
+        anova_test(data = temp, dv = score, wid = ID, within = Trail)
+      },
+      error = function(e) NULL
+    )
+    if (is.null(res)) data.frame() else as.data.frame(res)
+  }) %>%
+  ungroup() %>%
+  add_significance()
 
 # C. 事後比較 (Post-hoc) - 包含有母數與無母數
 posthoc_wilcox <- long_measures %>%
   group_by(Group, measure, ID) %>%
-  filter(n() == 3) %>% ungroup() %>%
+  filter(n() == 3) %>%
+  ungroup() %>%
   group_by(Group, measure) %>%
   pairwise_wilcox_test(score ~ Trail, paired = TRUE, p.adjust.method = "bonferroni")
 
 posthoc_t <- long_measures %>%
   group_by(Group, measure, ID) %>%
-  filter(n() == 3) %>% ungroup() %>%
+  filter(n() == 3) %>%
+  ungroup() %>%
   group_by(Group, measure) %>%
   pairwise_t_test(score ~ Trail, paired = TRUE, p.adjust.method = "bonferroni")
 
@@ -123,24 +151,27 @@ posthoc_t <- long_measures %>%
 pre_post_clean <- long_measures %>%
   filter(Trail %in% c("Pre", "Post")) %>%
   group_by(ID, measure) %>%
-  filter(n() == 2) %>% ungroup()
+  filter(n() == 2) %>%
+  ungroup()
 
 # 無母數 (Wilcoxon)
 paired_w_results <- pre_post_clean %>%
   group_by(Group, measure) %>%
-  wilcox_test(score ~ Trail, paired = TRUE) %>% add_significance()
+  wilcox_test(score ~ Trail, paired = TRUE) %>%
+  add_significance()
 
 # 有母數 (Paired T-test)
 paired_t_results <- pre_post_clean %>%
   group_by(Group, measure) %>%
-  t_test(score ~ Trail, paired = TRUE) %>% add_significance()
+  t_test(score ~ Trail, paired = TRUE) %>%
+  add_significance()
 
 # ==================================
 # ==== 5.1 (新增) 組間無母數檢定 (Mann-Whitney U) ====
 # ==================================
-message("--- 執行組間無母數檢定 (A vs B at Pre/Post) ---")
+message("--- 執行組間無母數檢定 (placebo vs PS150 at Pre/Post) ---")
 
-# 針對 Pre 和 Post 分別做 A vs B 的比較
+# 針對 Pre 和 Post 分別做 placebo vs PS150 的比較
 intergroup_wilcox_results_df <- long_measures %>%
   filter(Trail %in% c("Pre", "Post")) %>%
   group_by(measure, Trail) %>%
@@ -170,7 +201,6 @@ improvement_summary <- long_measures %>%
   mutate(diff = Post - Pre, improvement_pct = (diff / Pre) * 100)
 
 
-
 library(geepack)
 library(MuMIn)
 library(broom)
@@ -180,20 +210,20 @@ library(tidyverse)
 # ==================================
 
 # A. 準備乾淨的基礎資訊 (ID, Group, Sex, Age, BMI)
-id_info_clean <- ID_list %>% 
-  select(ID, Group, Sex, Age, BMI) %>% 
+id_info_clean <- ID_list %>%
+  select(ID, Group, Sex, Age, BMI) %>%
   mutate(ID = as.character(ID))
 
 # B. 準備問卷基準值
-survey_baseline_clean <- ID_list %>% 
-  select(ID, PSQI_baseline = PSQI_pre) %>% 
+survey_baseline_clean <- ID_list %>%
+  select(ID, PSQI_baseline = PSQI_pre) %>%
   mutate(ID = as.character(ID))
 
 # C. 重新建立 gee_data
 gee_data <- long_measures %>%
   mutate(ID = as.character(ID)) %>%
   # 移除 long_measures 裡可能殘留的 Group 欄位，避免 join 後產生 Group.x/y
-  select(-any_of("Group")) %>% 
+  select(-any_of("Group")) %>%
   filter(Trail %in% c("Pre", "Post")) %>%
   # 重新併入完整資訊
   left_join(id_info_clean, by = "ID") %>%
@@ -221,110 +251,160 @@ message("\n=== 開始執行 GEE 分析 (雙軌制) ===")
 
 # --- 定義公式 (直接作為公式物件，而非字串) ---
 formula_unadj <- as.formula("score ~ Group * Trail")
-formula_adj   <- as.formula("score ~ Group * Trail + Age + BMI + PSQI_baseline")
+formula_adj <- as.formula("score ~ Group * Trail + Age + BMI + PSQI_baseline")
 
 # --- 定義儲存容器 ---
 # 1. Best Fit (自動選 QIC 最小)
 gee_best_unadj_list <- list()
-gee_best_adj_list   <- list()
+gee_best_adj_list <- list()
 gee_best_posthoc_list <- list()
 
 # 2. Specified (強制 AR1)
 gee_spec_unadj_list <- list()
-gee_spec_adj_list   <- list()
+gee_spec_adj_list <- list()
 gee_spec_posthoc_list <- list()
 
 # --- 輔助函數：計算 Post-hoc ---
 calc_posthoc <- function(model, m_name, cor_name, type_name) {
   # 1. 組別在各時間點的差異
   emm1 <- emmeans(model, ~ Group | Trail)
-  ph1 <- pairs(emm1, reverse = TRUE, adjust = "none") %>% 
-    as.data.frame() %>% 
+  ph1 <- pairs(emm1, reverse = TRUE, adjust = "none") %>%
+    as.data.frame() %>%
     mutate(measure = m_name, Model_Type = type_name, Comparison = "Group_Diff")
-  
+
   # 2. 時間在各組別的差異
   emm2 <- emmeans(model, ~ Trail | Group)
-  ph2 <- pairs(emm2, reverse = TRUE, adjust = "none") %>% 
-    as.data.frame() %>% 
+  ph2 <- pairs(emm2, reverse = TRUE, adjust = "none") %>%
+    as.data.frame() %>%
     mutate(measure = m_name, Model_Type = type_name, Comparison = "Time_Diff")
-  
+
   return(bind_rows(ph1, ph2))
 }
 
 # --- 開始迴圈 ---
 for (m in measures_to_analyze) {
   # 準備資料
-  temp_data <- gee_data %>% 
-    filter(measure == m, !is.na(Group)) %>% 
+  temp_data <- gee_data %>%
+    filter(measure == m, !is.na(Group)) %>%
     arrange(ID, Trail)
-  
-  if(nrow(temp_data) < 4) next
-  
+
+  if (nrow(temp_data) < 4) next
+
   # =========================================================
   # Part A: Best Fit (自動比較 AR1 vs Exchangeable)
   # =========================================================
-  
+
   # 1. Unadjusted
-  m_ar1  <- tryCatch({ geeglm(formula_unadj, data = temp_data, id = ID, corstr = "ar1") }, error = function(e) NULL)
-  m_exch <- tryCatch({ geeglm(formula_unadj, data = temp_data, id = ID, corstr = "exchangeable") }, error = function(e) NULL)
-  
+  m_ar1 <- tryCatch(
+    {
+      geeglm(formula_unadj, data = temp_data, id = ID, corstr = "ar1")
+    },
+    error = function(e) NULL
+  )
+  m_exch <- tryCatch(
+    {
+      geeglm(formula_unadj, data = temp_data, id = ID, corstr = "exchangeable")
+    },
+    error = function(e) NULL
+  )
+
   best_mod_unadj <- NULL
   best_cor_unadj <- NA
-  
+
   if (!is.null(m_ar1) && !is.null(m_exch)) {
-    if (QIC(m_ar1) <= QIC(m_exch)) { best_mod_unadj <- m_ar1; best_cor_unadj <- "ar1" } 
-    else { best_mod_unadj <- m_exch; best_cor_unadj <- "exchangeable" }
-  } else if (!is.null(m_ar1)) { best_mod_unadj <- m_ar1; best_cor_unadj <- "ar1" } 
-  else if (!is.null(m_exch)) { best_mod_unadj <- m_exch; best_cor_unadj <- "exchangeable" }
-  
+    if (QIC(m_ar1) <= QIC(m_exch)) {
+      best_mod_unadj <- m_ar1
+      best_cor_unadj <- "ar1"
+    } else {
+      best_mod_unadj <- m_exch
+      best_cor_unadj <- "exchangeable"
+    }
+  } else if (!is.null(m_ar1)) {
+    best_mod_unadj <- m_ar1
+    best_cor_unadj <- "ar1"
+  } else if (!is.null(m_exch)) {
+    best_mod_unadj <- m_exch
+    best_cor_unadj <- "exchangeable"
+  }
+
   if (!is.null(best_mod_unadj)) {
     gee_best_unadj_list[[m]] <- tidy(best_mod_unadj) %>% mutate(measure = m, corstr = best_cor_unadj, QIC = QIC(best_mod_unadj))
   }
-  
+
   # 2. Adjusted
-  m_ar1_adj  <- tryCatch({ geeglm(formula_adj, data = temp_data, id = ID, corstr = "ar1") }, error = function(e) NULL)
-  m_exch_adj <- tryCatch({ geeglm(formula_adj, data = temp_data, id = ID, corstr = "exchangeable") }, error = function(e) NULL)
-  
+  m_ar1_adj <- tryCatch(
+    {
+      geeglm(formula_adj, data = temp_data, id = ID, corstr = "ar1")
+    },
+    error = function(e) NULL
+  )
+  m_exch_adj <- tryCatch(
+    {
+      geeglm(formula_adj, data = temp_data, id = ID, corstr = "exchangeable")
+    },
+    error = function(e) NULL
+  )
+
   best_mod_adj <- NULL
   best_cor_adj <- NA
-  
+
   if (!is.null(m_ar1_adj) && !is.null(m_exch_adj)) {
-    if (QIC(m_ar1_adj) <= QIC(m_exch_adj)) { best_mod_adj <- m_ar1_adj; best_cor_adj <- "ar1" } 
-    else { best_mod_adj <- m_exch_adj; best_cor_adj <- "exchangeable" }
-  } else if (!is.null(m_ar1_adj)) { best_mod_adj <- m_ar1_adj; best_cor_adj <- "ar1" } 
-  else if (!is.null(m_exch_adj)) { best_mod_adj <- m_exch_adj; best_cor_adj <- "exchangeable" }
-  
+    if (QIC(m_ar1_adj) <= QIC(m_exch_adj)) {
+      best_mod_adj <- m_ar1_adj
+      best_cor_adj <- "ar1"
+    } else {
+      best_mod_adj <- m_exch_adj
+      best_cor_adj <- "exchangeable"
+    }
+  } else if (!is.null(m_ar1_adj)) {
+    best_mod_adj <- m_ar1_adj
+    best_cor_adj <- "ar1"
+  } else if (!is.null(m_exch_adj)) {
+    best_mod_adj <- m_exch_adj
+    best_cor_adj <- "exchangeable"
+  }
+
   if (!is.null(best_mod_adj)) {
     gee_best_adj_list[[m]] <- tidy(best_mod_adj) %>% mutate(measure = m, corstr = best_cor_adj, QIC = QIC(best_mod_adj))
     # Post-hoc for Best Adjusted
     gee_best_posthoc_list[[m]] <- calc_posthoc(best_mod_adj, m, best_cor_adj, "Best_Fit")
   }
-  
+
   # =========================================================
   # Part B: Specified (強制 AR1)
   # =========================================================
-  
+
   # 1. Unadjusted (AR1)
   # 判斷是否可以直接沿用 Best Model (如果 Best 剛好是 AR1)
   spec_mod_unadj <- NULL
   if (!is.na(best_cor_unadj) && best_cor_unadj == "ar1" && !is.null(best_mod_unadj)) {
     spec_mod_unadj <- best_mod_unadj
   } else {
-    spec_mod_unadj <- tryCatch({ geeglm(formula_unadj, data = temp_data, id = ID, corstr = "ar1") }, error = function(e) NULL)
+    spec_mod_unadj <- tryCatch(
+      {
+        geeglm(formula_unadj, data = temp_data, id = ID, corstr = "ar1")
+      },
+      error = function(e) NULL
+    )
   }
-  
+
   if (!is.null(spec_mod_unadj)) {
     gee_spec_unadj_list[[m]] <- tidy(spec_mod_unadj) %>% mutate(measure = m, corstr = "ar1", QIC = QIC(spec_mod_unadj))
   }
-  
+
   # 2. Adjusted (AR1)
   spec_mod_adj <- NULL
   if (!is.na(best_cor_adj) && best_cor_adj == "ar1" && !is.null(best_mod_adj)) {
     spec_mod_adj <- best_mod_adj
   } else {
-    spec_mod_adj <- tryCatch({ geeglm(formula_adj, data = temp_data, id = ID, corstr = "ar1") }, error = function(e) NULL)
+    spec_mod_adj <- tryCatch(
+      {
+        geeglm(formula_adj, data = temp_data, id = ID, corstr = "ar1")
+      },
+      error = function(e) NULL
+    )
   }
-  
+
   if (!is.null(spec_mod_adj)) {
     gee_spec_adj_list[[m]] <- tidy(spec_mod_adj) %>% mutate(measure = m, corstr = "ar1", QIC = QIC(spec_mod_adj))
     # Post-hoc for Specified Adjusted
@@ -334,24 +414,17 @@ for (m in measures_to_analyze) {
 
 # --- 整理結果表格 ---
 df_gee_best_unadj <- bind_rows(gee_best_unadj_list)
-df_gee_best_adj   <- bind_rows(gee_best_adj_list)
-df_gee_best_ph    <- bind_rows(gee_best_posthoc_list)
+df_gee_best_adj <- bind_rows(gee_best_adj_list)
+df_gee_best_ph <- bind_rows(gee_best_posthoc_list)
 
 df_gee_spec_unadj <- bind_rows(gee_spec_unadj_list)
-df_gee_spec_adj   <- bind_rows(gee_spec_adj_list)
-df_gee_spec_ph    <- bind_rows(gee_spec_posthoc_list)
+df_gee_spec_adj <- bind_rows(gee_spec_adj_list)
+df_gee_spec_ph <- bind_rows(gee_spec_posthoc_list)
 
 message("GEE 分析完成！")
 
 
-
-
-
-
-
-
-
-#mix model------------
+# mix model------------
 library(broom.mixed) # 關鍵：解決 tidy method 找不到的問題
 library(lmerTest)
 library(car)
@@ -376,8 +449,15 @@ master_data <- data %>%
   left_join(id_master, by = "ID") %>%
   mutate(
     Trail = factor(Trail, levels = c(0, 1, 2), labels = c("Interview", "Pre", "Post")),
-    Group = factor(Group) # 這裡統一轉換，後續就不會再報錯
-  )
+    Group_clean = toupper(trimws(as.character(Group))),
+    Group = case_when(
+      Group_clean %in% c("A", "0", "CONTROL", "C", "\uff21") ~ "placebo",
+      Group_clean %in% c("B", "1", "EXP", "E", "\uff22") ~ "PS150",
+      TRUE ~ NA_character_
+    ),
+    Group = factor(Group, levels = c("placebo", "PS150"))
+  ) %>%
+  select(-Group_clean)
 
 # 建立長格式生理資料
 long_measures <- master_data %>%
@@ -395,10 +475,17 @@ final_analysis_df <- long_measures %>% filter(Trail %in% c("Pre", "Post"))
 results_unadjusted <- list()
 for (m in measures_to_analyze) {
   temp <- final_analysis_df %>% filter(measure == m)
-  if(nrow(temp) < 4) next
-  mod <- tryCatch({ lmer(score ~ Group * Trail + (1 | ID), data = temp) }, error = function(e) NULL)
-  if(!is.null(mod)) {
-    results_unadjusted[[m]] <- tidy(mod, conf.int = TRUE) %>% filter(effect == "fixed") %>% mutate(measure = m)
+  if (nrow(temp) < 4) next
+  mod <- tryCatch(
+    {
+      lmer(score ~ Group * Trail + (1 | ID), data = temp)
+    },
+    error = function(e) NULL
+  )
+  if (!is.null(mod)) {
+    results_unadjusted[[m]] <- tidy(mod, conf.int = TRUE) %>%
+      filter(effect == "fixed") %>%
+      mutate(measure = m)
   }
 }
 df_unadjusted <- bind_rows(results_unadjusted)
@@ -408,29 +495,25 @@ results_adjusted <- list()
 vif_report <- NULL
 for (m in measures_to_analyze) {
   temp <- final_analysis_df %>% filter(measure == m)
-  if(nrow(temp) < 4) next
-  mod_adj <- tryCatch({ 
-    lmer(score ~ Group * Trail + Age + BMI + PSQI_baseline + (1 | ID), data = temp) 
-  }, error = function(e) NULL)
-  
-  if(!is.null(mod_adj)) {
-    if(is.null(vif_report)) { # 只做一次 VIF 檢查
+  if (nrow(temp) < 4) next
+  mod_adj <- tryCatch(
+    {
+      lmer(score ~ Group * Trail + Age + BMI + PSQI_baseline + (1 | ID), data = temp)
+    },
+    error = function(e) NULL
+  )
+
+  if (!is.null(mod_adj)) {
+    if (is.null(vif_report)) { # 只做一次 VIF 檢查
       vif_mod <- lm(score ~ Group + Trail + Age + BMI + PSQI_baseline, data = temp)
       vif_report <- as.data.frame(vif(vif_mod))
     }
-    results_adjusted[[m]] <- tidy(mod_adj, conf.int = TRUE) %>% filter(effect == "fixed") %>% mutate(measure = m)
+    results_adjusted[[m]] <- tidy(mod_adj, conf.int = TRUE) %>%
+      filter(effect == "fixed") %>%
+      mutate(measure = m)
   }
 }
 df_adjusted <- bind_rows(results_adjusted)
-
-
-
-
-
-
-
-
-
 
 
 # 建立 Excel 活頁簿
@@ -456,7 +539,7 @@ addWorksheet(wb, "3_三時點_有母數(ANOVA)")
 writeData(wb, "3_三時點_有母數(ANOVA)", oneway_rm_anova_results)
 
 addWorksheet(wb, "4_三時點_事後比較")
-writeData(wb, "4_三時點_事後比較", posthoc_wilcox) 
+writeData(wb, "4_三時點_事後比較", posthoc_wilcox)
 
 # --- 階段 C: 前後測與組間比較 ---
 addWorksheet(wb, "5a_組內_前後測比較(Wilcox)")
@@ -497,7 +580,7 @@ writeData(wb, "10_LMM_調整模型", df_adjusted)
 
 # --- 階段 F: VIF ---
 addWorksheet(wb, "11_共線性檢查(VIF)")
-if(!is.null(vif_report)) {
+if (!is.null(vif_report)) {
   writeData(wb, "11_共線性檢查(VIF)", vif_report, rowNames = TRUE)
 }
 
@@ -505,16 +588,6 @@ if(!is.null(vif_report)) {
 saveWorkbook(wb, output_file, overwrite = TRUE)
 
 cat("\n統計分析報告已更新。\n儲存路徑：", output_file, "\n")
-
-
-
-
-
-
-
-
-
-
 
 
 #--畫圖-----
@@ -529,9 +602,9 @@ library(ggpubr)
 message("\n=== 開始繪圖流程 ===")
 
 # 1. 再次檢查必要物件
-if(!exists("paired_w_results")) warning("❌ 缺少 paired_w_results (組內)")
-if(!exists("intergroup_wilcox_results_df")) warning("❌ 缺少 intergroup_wilcox_results_df (組間)")
-if(!exists("df_gee_best_ph")) warning("❌ 缺少 df_gee_best_ph (GEE)")
+if (!exists("paired_w_results")) warning("❌ 缺少 paired_w_results (組內)")
+if (!exists("intergroup_wilcox_results_df")) warning("❌ 缺少 intergroup_wilcox_results_df (組間)")
+if (!exists("df_gee_best_ph")) warning("❌ 缺少 df_gee_best_ph (GEE)")
 
 # 2. 路徑設定
 folder_date <- format(Sys.Date(), "%y%m%d")
@@ -541,22 +614,28 @@ path_pure <- file.path(plot_base_path, "Report_pure")
 path_annotated <- file.path(plot_base_path, "Report_annotated")
 path_3point <- file.path(plot_base_path, "Report_3point_annotated")
 
-for(p in c(path_pure, path_annotated, path_3point)) {
+for (p in c(path_pure, path_annotated, path_3point)) {
   if (!dir.exists(p)) dir.create(p, recursive = TRUE)
 }
 
 # 3. 顏色設定
-my_colors <- c("A" = "#31688E", "B" = "#E67E22")
-my_shapes <- c("A" = 16, "B" = 17)
+my_colors <- c("placebo" = "#31688E", "PS150" = "#E67E22")
+my_shapes <- c("placebo" = 16, "PS150" = 17)
 
 # 4. 準備繪圖數據
 plot_data_full <- long_measures %>%
   mutate(
-    Group = as.character(Group),
-    Group = trimws(Group),
-    Group = case_when(Group == "0" ~ "A", Group == "1" ~ "B", TRUE ~ Group)
+    Group_clean = toupper(trimws(as.character(Group))),
+    Group = case_when(
+      Group_clean %in% c("A", "0", "CONTROL", "C", "\uff21") ~ "placebo",
+      Group_clean %in% c("B", "1", "EXP", "E", "\uff22") ~ "PS150",
+      Group_clean %in% c("PLACEBO") ~ "placebo",
+      Group_clean %in% c("PS150") ~ "PS150",
+      TRUE ~ NA_character_
+    )
   ) %>%
-  filter(Group %in% c("A", "B")) %>%
+  select(-Group_clean) %>%
+  filter(!is.na(Group)) %>%
   group_by(Group, measure, Trail) %>%
   summarise(
     avg = mean(score, na.rm = TRUE),
@@ -571,75 +650,80 @@ plot_data_full <- long_measures %>%
 # ==============================================================================
 message("--- 繪製兩點圖 (Annotated 包含組間 $) ---")
 
-plot_data_2pt <- plot_data_full %>% 
+plot_data_2pt <- plot_data_full %>%
   filter(Trail %in% c("Pre", "Post")) %>%
   mutate(Trail = factor(Trail, levels = c("Pre", "Post")))
 
 for (m in unique(plot_data_2pt$measure)) {
   df_sum <- plot_data_2pt %>% filter(measure == m)
-  if(nrow(df_sum) == 0) next
-  
+  if (nrow(df_sum) == 0) next
+
   # --- A. 填入顯著性標籤 ---
-  df_sum$label_A <- NA; df_sum$label_B <- NA; df_sum$label_AB <- NA
-  
+  df_sum$label_placebo <- NA
+  df_sum$label_PS150 <- NA
+  df_sum$label_AB <- NA
+
   # 1. 組內比較 (Pre vs Post)
-  if(exists("paired_w_results")) {
-    res_A <- paired_w_results %>% filter(measure == m, Group == "A")
-    if(nrow(res_A) > 0 && !is.na(res_A$p) && res_A$p < 0.05) df_sum$label_A[df_sum$Group=="A" & df_sum$Trail=="Post"] <- "*"
-    
-    res_B <- paired_w_results %>% filter(measure == m, Group == "B")
-    if(nrow(res_B) > 0 && !is.na(res_B$p) && res_B$p < 0.05) df_sum$label_B[df_sum$Group=="B" & df_sum$Trail=="Post"] <- "#"
+  if (exists("paired_w_results")) {
+    res_placebo <- paired_w_results %>% filter(measure == m, Group == "placebo")
+    if (nrow(res_placebo) > 0 && !is.na(res_placebo$p) && res_placebo$p < 0.05) df_sum$label_placebo[df_sum$Group == "placebo" & df_sum$Trail == "Post"] <- "*"
+
+    res_PS150 <- paired_w_results %>% filter(measure == m, Group == "PS150")
+    if (nrow(res_PS150) > 0 && !is.na(res_PS150$p) && res_PS150$p < 0.05) df_sum$label_PS150[df_sum$Group == "PS150" & df_sum$Trail == "Post"] <- "#"
   }
-  
-  # 2. 組間比較 (A vs B) - 【關鍵修正】
-  if(exists("intergroup_wilcox_results_df")) {
+
+  # 2. 組間比較 (placebo vs PS150) - 【關鍵修正】
+  if (exists("intergroup_wilcox_results_df")) {
     # 檢查 Pre
     res_pre <- intergroup_wilcox_results_df %>% filter(measure == m, Trail == "Pre")
-    if(nrow(res_pre) > 0 && !is.na(res_pre$p) && res_pre$p < 0.05) df_sum$label_AB[df_sum$Group=="A" & df_sum$Trail=="Pre"] <- "$"
-    
+    if (nrow(res_pre) > 0 && !is.na(res_pre$p) && res_pre$p < 0.05) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Pre"] <- "$"
+
     # 檢查 Post
     res_post <- intergroup_wilcox_results_df %>% filter(measure == m, Trail == "Post")
-    if(nrow(res_post) > 0 && !is.na(res_post$p) && res_post$p < 0.05) df_sum$label_AB[df_sum$Group=="A" & df_sum$Trail=="Post"] <- "$"
+    if (nrow(res_post) > 0 && !is.na(res_post$p) && res_post$p < 0.05) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Post"] <- "$"
   }
-  
+
   # --- B. 繪圖設定 ---
-  raw_min <- min(df_sum$avg - df_sum$se, na.rm=T)
-  raw_max <- max(df_sum$avg + df_sum$se, na.rm=T)
-  if(raw_min == raw_max) { raw_min <- raw_min - 0.1; raw_max <- raw_max + 0.1 }
+  raw_min <- min(df_sum$avg - df_sum$se, na.rm = T)
+  raw_max <- max(df_sum$avg + df_sum$se, na.rm = T)
+  if (raw_min == raw_max) {
+    raw_min <- raw_min - 0.1
+    raw_max <- raw_max + 0.1
+  }
   plot_max <- raw_max + (raw_max - raw_min) * 0.2
   breaks_seq <- pretty(c(raw_min, plot_max), n = 5)
-  if(length(breaks_seq) > 6) breaks_seq <- pretty(c(raw_min, plot_max), n = 4)
-  
+  if (length(breaks_seq) > 6) breaks_seq <- pretty(c(raw_min, plot_max), n = 4)
+
   p_base <- ggplot(df_sum, aes(x = Trail, y = avg, group = Group, color = Group, shape = Group)) +
-    geom_line(linewidth = 1.2, alpha = 0.9) + 
+    geom_line(linewidth = 1.2, alpha = 0.9) +
     geom_point(size = 4.5) +
     geom_errorbar(aes(ymin = avg - se, ymax = avg + se), width = 0.08, linewidth = 0.8) +
     scale_x_discrete(expand = expansion(mult = c(0.35, 0.35))) +
     scale_y_continuous(breaks = breaks_seq, limits = range(breaks_seq), expand = expansion(mult = c(0.05, 0.30))) +
-    scale_color_manual(values = my_colors, labels = c("A" = "Group A", "B" = "Group B")) +
-    scale_shape_manual(values = my_shapes, labels = c("A" = "Group A", "B" = "Group B")) +
+    scale_color_manual(values = my_colors, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
+    scale_shape_manual(values = my_shapes, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
     labs(title = m, subtitle = "Mean ± SEM", x = NULL, y = "Score") +
     theme_classic() +
     theme(
       plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
       plot.subtitle = element_text(size = 12, color = "gray30"),
-      axis.title.y = element_text(size = 18, face = "bold", margin = margin(r=10)),
+      axis.title.y = element_text(size = 18, face = "bold", margin = margin(r = 10)),
       axis.text = element_text(size = 16, color = "black", face = "bold"),
-      legend.position = c(0.95, 0.98), 
-      legend.justification = c("right", "top"), 
-      legend.background = element_rect(fill = "white", color = "black", linewidth = 0.2), 
+      legend.position = c(0.95, 0.98),
+      legend.justification = c("right", "top"),
+      legend.background = element_rect(fill = "white", color = "black", linewidth = 0.2),
       legend.title = element_blank(),
       legend.text = element_text(size = 14)
     )
-  
+
   # 輸出 Annotated
   p_anno <- p_base +
-    geom_text(aes(label = label_A, y = avg + se), vjust = -1, size = 8, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
-    geom_text(aes(label = label_B, y = avg + se), vjust = -1, size = 7, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
+    geom_text(aes(label = label_placebo, y = avg + se), vjust = -1, size = 8, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
+    geom_text(aes(label = label_PS150, y = avg + se), vjust = -1, size = 7, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
     # 組間標記 $
     geom_text(data = df_sum %>% filter(!is.na(label_AB)), aes(label = label_AB, x = Trail, y = plot_max), color = "black", vjust = 1, size = 6, show.legend = FALSE, na.rm = TRUE) +
-    labs(subtitle = "Mean ± SEM (*:A intra, #:B intra, $:A vs B)")
-  
+    labs(subtitle = "Mean ± SEM (*:placebo intra, #:PS150 intra, $:placebo vs PS150)")
+
   safe_name <- gsub("%", "pct", m)
   ggsave(file.path(path_annotated, paste0(safe_name, "_Trend_Annotated.png")), p_anno, width = 4, height = 5, dpi = 300, bg = "white")
   ggsave(file.path(path_pure, paste0(safe_name, "_Trend_Pure.png")), p_base, width = 4, height = 5, dpi = 300, bg = "white")
@@ -655,69 +739,82 @@ plot_data_3pt <- plot_data_full %>%
   mutate(Trail = factor(Trail, levels = c("Interview", "Pre", "Post")))
 
 check_gee_intra <- function(msr, grp, tm) {
-  if(!exists("df_gee_best_ph")) return(FALSE)
-  res <- df_gee_best_ph %>% 
+  if (!exists("df_gee_best_ph")) {
+    return(FALSE)
+  }
+  res <- df_gee_best_ph %>%
     filter(measure == msr, Comparison == "Time_Diff", Group == grp) %>%
     filter(grepl("Interview", contrast) & grepl(tm, contrast))
-  if(nrow(res) > 0 && !is.na(res$p.value) && res$p.value < 0.05) return(TRUE)
+  if (nrow(res) > 0 && !is.na(res$p.value) && res$p.value < 0.05) {
+    return(TRUE)
+  }
   return(FALSE)
 }
 
 check_gee_inter <- function(msr, tm) {
-  if(!exists("df_gee_best_ph")) return(FALSE)
-  res <- df_gee_best_ph %>% 
+  if (!exists("df_gee_best_ph")) {
+    return(FALSE)
+  }
+  res <- df_gee_best_ph %>%
     filter(measure == msr, Comparison == "Group_Diff", Trail == tm)
-  if(nrow(res) > 0 && !is.na(res$p.value) && res$p.value < 0.05) return(TRUE)
+  if (nrow(res) > 0 && !is.na(res$p.value) && res$p.value < 0.05) {
+    return(TRUE)
+  }
   return(FALSE)
 }
 
 for (m in unique(plot_data_3pt$measure)) {
   df_sum <- plot_data_3pt %>% filter(measure == m)
-  if(nrow(df_sum) == 0) next
-  
-  df_sum$label_A <- NA; df_sum$label_B <- NA; df_sum$label_AB <- NA
-  
-  if(check_gee_intra(m, "A", "Pre"))  df_sum$label_A[df_sum$Group=="A" & df_sum$Trail=="Pre"]  <- "*"
-  if(check_gee_intra(m, "A", "Post")) df_sum$label_A[df_sum$Group=="A" & df_sum$Trail=="Post"] <- "*"
-  if(check_gee_intra(m, "B", "Pre"))  df_sum$label_B[df_sum$Group=="B" & df_sum$Trail=="Pre"]  <- "#"
-  if(check_gee_intra(m, "B", "Post")) df_sum$label_B[df_sum$Group=="B" & df_sum$Trail=="Post"] <- "#"
-  
-  if(check_gee_inter(m, "Interview")) df_sum$label_AB[df_sum$Group=="A" & df_sum$Trail=="Interview"] <- "$"
-  if(check_gee_inter(m, "Pre"))       df_sum$label_AB[df_sum$Group=="A" & df_sum$Trail=="Pre"]       <- "$"
-  if(check_gee_inter(m, "Post"))      df_sum$label_AB[df_sum$Group=="A" & df_sum$Trail=="Post"]      <- "$"
-  
-  raw_min <- min(df_sum$avg - df_sum$se, na.rm=T)
-  raw_max <- max(df_sum$avg + df_sum$se, na.rm=T)
-  if(raw_min == raw_max) { raw_min <- raw_min - 0.1; raw_max <- raw_max + 0.1 }
+  if (nrow(df_sum) == 0) next
+
+  df_sum$label_placebo <- NA
+  df_sum$label_PS150 <- NA
+  df_sum$label_AB <- NA
+
+  if (check_gee_intra(m, "placebo", "Pre")) df_sum$label_placebo[df_sum$Group == "placebo" & df_sum$Trail == "Pre"] <- "*"
+  if (check_gee_intra(m, "placebo", "Post")) df_sum$label_placebo[df_sum$Group == "placebo" & df_sum$Trail == "Post"] <- "*"
+  if (check_gee_intra(m, "PS150", "Pre")) df_sum$label_PS150[df_sum$Group == "PS150" & df_sum$Trail == "Pre"] <- "#"
+  if (check_gee_intra(m, "PS150", "Post")) df_sum$label_PS150[df_sum$Group == "PS150" & df_sum$Trail == "Post"] <- "#"
+
+  if (check_gee_inter(m, "Interview")) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Interview"] <- "$"
+  if (check_gee_inter(m, "Pre")) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Pre"] <- "$"
+  if (check_gee_inter(m, "Post")) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Post"] <- "$"
+
+  raw_min <- min(df_sum$avg - df_sum$se, na.rm = T)
+  raw_max <- max(df_sum$avg + df_sum$se, na.rm = T)
+  if (raw_min == raw_max) {
+    raw_min <- raw_min - 0.1
+    raw_max <- raw_max + 0.1
+  }
   plot_max <- raw_max + (raw_max - raw_min) * 0.15
   breaks_seq <- pretty(c(raw_min, plot_max), n = 5)
-  if(length(breaks_seq) > 6) breaks_seq <- pretty(c(raw_min, plot_max), n = 4)
-  
+  if (length(breaks_seq) > 6) breaks_seq <- pretty(c(raw_min, plot_max), n = 4)
+
   p_3pt <- ggplot(df_sum, aes(x = Trail, y = avg, group = Group, color = Group, shape = Group)) +
-    geom_line(linewidth = 1.2, alpha = 0.9) + 
+    geom_line(linewidth = 1.2, alpha = 0.9) +
     geom_point(size = 4.5) +
     geom_errorbar(aes(ymin = avg - se, ymax = avg + se), width = 0.08, linewidth = 0.8) +
     scale_x_discrete(expand = expansion(mult = c(0.1, 0.1))) +
     scale_y_continuous(breaks = breaks_seq, limits = range(breaks_seq), expand = expansion(mult = c(0.05, 0.30))) +
-    scale_color_manual(values = my_colors, labels = c("A" = "Group A", "B" = "Group B")) +
-    scale_shape_manual(values = my_shapes, labels = c("A" = "Group A", "B" = "Group B")) +
-    labs(title = m, subtitle = "Mean ± SEM (*:vs Int, #:vs Int, $:A vs B)", x = NULL, y = "Score") +
+    scale_color_manual(values = my_colors, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
+    scale_shape_manual(values = my_shapes, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
+    labs(title = m, subtitle = "Mean ± SEM (*:vs Int, #:vs Int, $:placebo vs PS150)", x = NULL, y = "Score") +
     theme_classic() +
     theme(
       plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
       plot.subtitle = element_text(size = 12, color = "gray30"),
-      axis.title.y = element_text(size = 18, face = "bold", margin = margin(r=10)),
+      axis.title.y = element_text(size = 18, face = "bold", margin = margin(r = 10)),
       axis.text = element_text(size = 16, color = "black", face = "bold"),
-      legend.position = c(0.95, 0.98), 
-      legend.justification = c("right", "top"), 
-      legend.background = element_rect(fill = "white", color = "black", linewidth = 0.2), 
+      legend.position = c(0.95, 0.98),
+      legend.justification = c("right", "top"),
+      legend.background = element_rect(fill = "white", color = "black", linewidth = 0.2),
       legend.title = element_blank(),
       legend.text = element_text(size = 14)
     ) +
-    geom_text(aes(label = label_A, y = avg + se), vjust = -1, size = 8, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
-    geom_text(aes(label = label_B, y = avg + se), vjust = -1, size = 7, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
+    geom_text(aes(label = label_placebo, y = avg + se), vjust = -1, size = 8, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
+    geom_text(aes(label = label_PS150, y = avg + se), vjust = -1, size = 7, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
     geom_text(data = df_sum %>% filter(!is.na(label_AB)), aes(label = label_AB, x = Trail, y = plot_max), color = "black", vjust = 1, size = 6, show.legend = FALSE, na.rm = TRUE)
-  
+
   safe_name <- gsub("%", "pct", m)
   ggsave(file.path(path_3point, paste0(safe_name, "_Trend_3pt.png")), p_3pt, width = 5, height = 5, dpi = 300, bg = "white")
 }

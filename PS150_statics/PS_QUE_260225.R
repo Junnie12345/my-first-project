@@ -10,7 +10,7 @@ for (pkg in required_packages) {
 # === 2. 設定路徑與讀取資料 ===
 base_dir <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\"
 input_file <- paste0(base_dir, "受試者進度紀錄與基本資料260117_clean.xlsx")
-output_file <- paste0(base_dir, "QUE分析_Full_260130_V2.xlsx") 
+output_file <- paste0(base_dir, "QUE分析_Full_260130_V2.xlsx")
 
 # 讀取資料
 message("讀取檔案: ", input_file)
@@ -37,9 +37,18 @@ wide_data_pre_post <- data %>%
   # 轉數值
   mutate(across(.cols = contains("_pre") | contains("_post"), .fns = as.numeric)) %>%
   select(ID, Group, contains("_pre"), contains("_post")) %>%
-  # [修正] 直接去空白並保留 A/B
-  mutate(Group = trimws(as.character(Group))) %>%
-  filter(Group %in% c("A", "B"))
+  # [修正] 清除空白、轉大寫後精準映射 A→placebo, B→PS150
+  mutate(
+    Group_clean = toupper(trimws(as.character(Group))),
+    Group = case_when(
+      Group_clean %in% c("A", "0", "CONTROL", "C", "\uff21") ~ "placebo",
+      Group_clean %in% c("B", "1", "EXP", "E", "\uff22") ~ "PS150",
+      TRUE ~ NA_character_
+    ),
+    Group = factor(Group, levels = c("placebo", "PS150"))
+  ) %>%
+  select(-Group_clean) %>%
+  filter(!is.na(Group))
 
 message("寬資料 (Wide) 筆數: ", nrow(wide_data_pre_post))
 
@@ -55,9 +64,16 @@ long_data <- data %>%
     time = factor(case_when(
       time == "0" ~ "interview", time == "pre" ~ "Pre", time == "post" ~ "Post", TRUE ~ time
     ), levels = c("interview", "Pre", "Post")),
-    Group = trimws(as.character(Group)) # [修正] 直接使用 A/B
+    Group_clean = toupper(trimws(as.character(Group))),
+    Group = case_when(
+      Group_clean %in% c("A", "0", "CONTROL", "C", "\uff21") ~ "placebo",
+      Group_clean %in% c("B", "1", "EXP", "E", "\uff22") ~ "PS150",
+      TRUE ~ NA_character_
+    ),
+    Group = factor(Group, levels = c("placebo", "PS150"))
   ) %>%
-  filter(Group %in% c("A", "B")) %>%
+  select(-Group_clean) %>%
+  filter(!is.na(Group)) %>%
   filter(!is.na(score))
 
 message("長資料 (Long) 筆數: ", nrow(long_data))
@@ -69,8 +85,17 @@ message("--- 計算基本資料 (整合版) ---")
 
 # 1. 準備分析資料
 data_AB <- data %>%
-  mutate(Group = trimws(as.character(Group))) %>%
-  filter(Group %in% c("A", "B"))
+  mutate(
+    Group_clean = toupper(trimws(as.character(Group))),
+    Group = case_when(
+      Group_clean %in% c("A", "0", "CONTROL", "C", "\uff21") ~ "placebo",
+      Group_clean %in% c("B", "1", "EXP", "E", "\uff22") ~ "PS150",
+      TRUE ~ NA_character_
+    ),
+    Group = factor(Group, levels = c("placebo", "PS150"))
+  ) %>%
+  select(-Group_clean) %>%
+  filter(!is.na(Group))
 
 # 2. 設定變數清單
 continuous_vars <- c("Age", "Height", "Weight", "BMI")
@@ -93,8 +118,8 @@ for (v in continuous_vars) {
     )
 
   # 分離 A/B 組數據
-  stats_A <- stats %>% filter(Group == "A")
-  stats_B <- stats %>% filter(Group == "B")
+  stats_placebo <- stats %>% filter(Group == "placebo")
+  stats_PS150 <- stats %>% filter(Group == "PS150")
 
   # 執行 T-test
   t_res <- tryCatch(
@@ -109,12 +134,12 @@ for (v in continuous_vars) {
   # 建立單列資料
   row_df <- tibble(
     Variable = v,
-    A_n = as.character(stats_A$n),
-    A_mean = round(stats_A$mean, 2),
-    A_sd = round(stats_A$sd, 2),
-    B_n = as.character(stats_B$n),
-    B_mean = round(stats_B$mean, 2),
-    B_sd = round(stats_B$sd, 2),
+    placebo_n = as.character(stats_placebo$n),
+    placebo_mean = round(stats_placebo$mean, 2),
+    placebo_sd = round(stats_placebo$sd, 2),
+    PS150_n = as.character(stats_PS150$n),
+    PS150_mean = round(stats_PS150$mean, 2),
+    PS150_sd = round(stats_PS150$sd, 2),
     p = round(p_val, 3),
     method = "T-test"
   )
@@ -124,10 +149,10 @@ for (v in continuous_vars) {
 
 # --- Part B: 性別變數處理 (Chi-square) ---
 # 假設 Sex: 1=男, 2=女
-n_A_m <- sum(data_AB$Group == "A" & data_AB$Sex == 1, na.rm = TRUE)
-n_A_f <- sum(data_AB$Group == "A" & data_AB$Sex == 2, na.rm = TRUE)
-n_B_m <- sum(data_AB$Group == "B" & data_AB$Sex == 1, na.rm = TRUE)
-n_B_f <- sum(data_AB$Group == "B" & data_AB$Sex == 2, na.rm = TRUE)
+n_placebo_m <- sum(data_AB$Group == "placebo" & data_AB$Sex == 1, na.rm = TRUE)
+n_placebo_f <- sum(data_AB$Group == "placebo" & data_AB$Sex == 2, na.rm = TRUE)
+n_PS150_m <- sum(data_AB$Group == "PS150" & data_AB$Sex == 1, na.rm = TRUE)
+n_PS150_f <- sum(data_AB$Group == "PS150" & data_AB$Sex == 2, na.rm = TRUE)
 
 # 執行 Chi-square
 sex_tbl <- table(data_AB$Group, data_AB$Sex)
@@ -136,10 +161,10 @@ p_val_sex <- if (!is.null(chisq_res)) chisq_res$p else NA
 
 gender_row <- tibble(
   Variable = "Gender",
-  A_n = paste0(n_A_m, " (", n_A_f, ")"), # 格式: Male (Female)
-  A_mean = NA, A_sd = NA,
-  B_n = paste0(n_B_m, " (", n_B_f, ")"),
-  B_mean = NA, B_sd = NA,
+  placebo_n = paste0(n_placebo_m, " (", n_placebo_f, ")"), # 格式: Male (Female)
+  placebo_mean = NA, placebo_sd = NA,
+  PS150_n = paste0(n_PS150_m, " (", n_PS150_f, ")"),
+  PS150_mean = NA, PS150_sd = NA,
   p = round(p_val_sex, 3),
   method = "Chi-square test"
 )
@@ -174,7 +199,7 @@ intergroup_t_list <- list()
 intergroup_w_list <- list()
 
 # --- A. 組內比較 ---
-for (g in unique(wide_data_pre_post$Group)) { # 這裡 g 會是 "A" 或 "B"
+for (g in unique(wide_data_pre_post$Group)) { # 這裡 g 會是 "placebo" 或 "PS150"
   for (m in measures_to_analyze) {
     pre_col <- paste0(m, "_pre")
     post_col <- paste0(m, "_post")
@@ -344,7 +369,7 @@ for (tgt in reg_targets) {
 
   # 整理 Term 名稱
   coef_df$Term <- gsub("\\(Intercept\\)", "Intercept", coef_df$Term)
-  coef_df$Term <- gsub("GroupB", "Group (B vs A)", coef_df$Term)
+  coef_df$Term <- gsub("GroupPS150", "Group (PS150 vs placebo)", coef_df$Term)
   coef_df$Term <- gsub(tgt$baseline, paste0("Baseline_", tgt$name), coef_df$Term)
 
   # 顯著性標記
@@ -381,7 +406,7 @@ for (tgt in reg_targets) {
   message(
     "  -> ", tgt$name, " (No MEQ): N=", nrow(reg_sub),
     ", R²=", round(s$r.squared, 3),
-    ", Group p=", round(coef_df$`Pr(>|t|)`[coef_df$Term == "Group (B vs A)"], 4)
+    ", Group p=", round(coef_df$`Pr(>|t|)`[coef_df$Term == "Group (PS150 vs placebo)"], 4)
   )
 }
 
@@ -435,7 +460,7 @@ for (tgt in reg_targets) {
 
   # 整理 Term 名稱 (讓報表更易讀)
   coef_df$Term <- gsub("\\(Intercept\\)", "Intercept", coef_df$Term)
-  coef_df$Term <- gsub("GroupB", "Group (B vs A)", coef_df$Term)
+  coef_df$Term <- gsub("GroupPS150", "Group (PS150 vs placebo)", coef_df$Term)
   coef_df$Term <- gsub("Delta_MEQ", "Delta_MEQ", coef_df$Term)
   coef_df$Term <- gsub(tgt$baseline, paste0("Baseline_", tgt$name), coef_df$Term)
 
@@ -475,7 +500,7 @@ for (tgt in reg_targets) {
   message(
     "  -> ", tgt$name, ": N=", nrow(reg_sub),
     ", R²=", round(s$r.squared, 3),
-    ", Group p=", round(coef_df$`Pr(>|t|)`[coef_df$Term == "Group (B vs A)"], 4)
+    ", Group p=", round(coef_df$`Pr(>|t|)`[coef_df$Term == "Group (PS150 vs placebo)"], 4)
   )
 }
 
@@ -568,8 +593,8 @@ if (!dir.exists(path_trend_anno)) dir.create(path_trend_anno, recursive = TRUE)
 if (!dir.exists(path_trend_pure)) dir.create(path_trend_pure, recursive = TRUE)
 if (!dir.exists(path_diff)) dir.create(path_diff, recursive = TRUE)
 
-my_colors <- c("A" = "#31688E", "B" = "#E67E22")
-my_shapes <- c("A" = 16, "B" = 17)
+my_colors <- c("placebo" = "#31688E", "PS150" = "#E67E22")
+my_shapes <- c("placebo" = 16, "PS150" = 17)
 
 # ==============================================================================
 # === 9. 繪圖：趨勢圖 (Trend Plot) - 視覺優化版 =====
@@ -578,10 +603,10 @@ message("--- 繪製趨勢圖 (直式 5:4 | 優化字體與 ErrorBar) ---")
 
 # 準備繪圖數據
 plot_summary <- long_data %>%
-  filter(Group %in% c("A", "B"), time %in% c("Pre", "Post")) %>%
+  filter(Group %in% c("placebo", "PS150"), time %in% c("Pre", "Post")) %>%
   group_by(Group, measure, time) %>%
   summarise(avg = mean(score, na.rm = T), sd = sd(score, na.rm = T), n = n(), se = sd / sqrt(n), .groups = "drop") %>%
-  mutate(time = factor(time, levels = c("Pre", "Post")), Group = factor(Group, levels = c("A", "B")))
+  mutate(time = factor(time, levels = c("Pre", "Post")), Group = factor(Group, levels = c("placebo", "PS150")))
 
 # 定義顯著性檢查函數 (連接 Step 5 的 T-test 結果)
 check_intra <- function(grp, msr) {
@@ -615,17 +640,17 @@ for (m in unique(plot_summary$measure)) {
   if (nrow(df_sum) == 0) next
 
   # 1. 填寫顯著性標籤 (*, #, $)
-  df_sum$label_A <- NA
-  df_sum$label_B <- NA
+  df_sum$label_placebo <- NA
+  df_sum$label_PS150 <- NA
   df_sum$label_AB <- NA
 
-  # A 組組內 (Post)
-  if (check_intra("A", m)) df_sum$label_A[df_sum$Group == "A" & df_sum$time == "Post"] <- "*"
-  # B 組組內 (Post)
-  if (check_intra("B", m)) df_sum$label_B[df_sum$Group == "B" & df_sum$time == "Post"] <- "#"
+  # placebo 組組內 (Post)
+  if (check_intra("placebo", m)) df_sum$label_placebo[df_sum$Group == "placebo" & df_sum$time == "Post"] <- "*"
+  # PS150 組組內 (Post)
+  if (check_intra("PS150", m)) df_sum$label_PS150[df_sum$Group == "PS150" & df_sum$time == "Post"] <- "#"
   # 組間 (Pre / Post)
-  if (check_inter(m, "_pre")) df_sum$label_AB[df_sum$Group == "A" & df_sum$time == "Pre"] <- "$"
-  if (check_inter(m, "_post")) df_sum$label_AB[df_sum$Group == "A" & df_sum$time == "Post"] <- "$"
+  if (check_inter(m, "_pre")) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$time == "Pre"] <- "$"
+  if (check_inter(m, "_post")) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$time == "Post"] <- "$"
 
   # 2. Y 軸範圍與刻度計算
   raw_min <- min(df_sum$avg - df_sum$se, na.rm = T)
@@ -658,8 +683,8 @@ for (m in unique(plot_summary$measure)) {
 
     # 【修改 2】Y 軸上方留白增加到 30% (mult = 0.30)，防止星星被切掉
     scale_y_continuous(breaks = breaks_seq, limits = range(breaks_seq), expand = expansion(mult = c(0.05, 0.30))) +
-    scale_color_manual(values = my_colors, labels = c("A" = "Group A", "B" = "Group B")) +
-    scale_shape_manual(values = my_shapes, labels = c("A" = "Group A", "B" = "Group B")) +
+    scale_color_manual(values = my_colors, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
+    scale_shape_manual(values = my_shapes, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
     labs(title = m, subtitle = "Mean ± SEM", x = NULL, y = "Score") +
     theme_classic() +
     theme(
@@ -682,10 +707,10 @@ for (m in unique(plot_summary$measure)) {
   # 4. 加入顯著性標記
   # 注意：這裡使用 vjust = -1 讓符號離 Error Bar 遠一點點，避免重疊
   p_anno <- p_base +
-    geom_text(aes(label = label_A, y = avg + se), vjust = -1, size = 8, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
-    geom_text(aes(label = label_B, y = avg + se), vjust = -1, size = 7, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
+    geom_text(aes(label = label_placebo, y = avg + se), vjust = -1, size = 8, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
+    geom_text(aes(label = label_PS150, y = avg + se), vjust = -1, size = 7, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
     geom_text(data = df_sum %>% filter(!is.na(label_AB)), aes(label = label_AB, x = time, y = plot_max), color = "black", vjust = 1, size = 6, show.legend = FALSE, na.rm = TRUE) +
-    labs(subtitle = "Mean ± SEM (*:A intra, #:B intra, $:A vs B)")
+    labs(subtitle = "Mean ± SEM (*:placebo intra, #:PS150 intra, $:placebo vs PS150)")
 
   # 5. 存檔 (直式 4:5)
   ggsave(filename = file.path(path_trend_anno, paste0(m, "_Trend_Annotated.png")), plot = p_anno, width = 4, height = 5, dpi = 300, bg = "white")
@@ -725,7 +750,7 @@ for (m in unique(diff_stats$measure)) {
   # 準備數據
   df_bar <- diff_stats %>%
     filter(measure == m) %>%
-    mutate(Group = factor(Group, levels = c("A", "B")))
+    mutate(Group = factor(Group, levels = c("placebo", "PS150")))
 
   if (nrow(df_bar) == 0) next
 

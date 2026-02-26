@@ -12,7 +12,7 @@
 # ==============================================================================
 
 # ==============================================================================
-# === 1. 套件檢查與安裝 ===
+# == 1. 套件檢查與安裝 ====
 # ==============================================================================
 message(">>> [1/10] 檢查並載入套件...")
 required_packages <- c(
@@ -20,7 +20,7 @@ required_packages <- c(
   "hms", "writexl", "geepack", "emmeans", "ggplot2", "rstatix", "broom",
   "gtsummary", "afex", "gt",
   "performance", "correlation", "see", "patchwork", "lme4", "GGally",
-  "MuMIn", "ggpubr", "stringr"
+  "MuMIn", "ggpubr", "stringr", "rmcorr", "tibble"
 )
 
 for (pkg in required_packages) {
@@ -34,7 +34,7 @@ message("✅ 套件載入完成")
 # 建議：使用 renv::init() + renv::snapshot() 管理套件版本以提升可重現性
 
 # ==============================================================================
-# === 2. 檔案路徑與變數設定 ===
+# === 2. 檔案路徑與變數設定 ====
 # ==============================================================================
 message(">>> [2/10] 設定路徑與參數...")
 
@@ -44,7 +44,7 @@ base_dir <- file.path(
   "桌面", "PS150_results", "2026"
 )
 input_file <- file.path(base_dir, "Sleepdiary260117_all_clean.xlsx")
-output_file <- file.path(base_dir, "Sleepdiary_stats_Full_Final_v11.xlsx")
+output_file <- file.path(base_dir, "Sleepdiary_stats_260226_1.xlsx")
 
 # --- 輸入檔案存在性檢查 ---
 if (!file.exists(input_file)) {
@@ -67,11 +67,11 @@ ALPHA_NORMALITY <- 0.05 # 常態檢定顯著水準
 ALPHA_SIGNIFICANCE <- 0.05 # 繪圖標註顯著水準
 
 # --- 統一色盤 ---
-COLOR_PALETTE <- c("A" = "#31688E", "B" = "#E67E22")
-SHAPE_PALETTE <- c("A" = 16, "B" = 17)
+COLOR_PALETTE <- c("placebo" = "#31688E", "PS150" = "#E67E22")
+SHAPE_PALETTE <- c("placebo" = 16, "PS150" = 17)
 
 # ==============================================================================
-# === 3. 資料讀取與清洗 ===
+# === 3. 資料讀取與清洗 ====
 # ==============================================================================
 message(">>> [3/10] 讀取並清洗資料 (修復 Week 0)...")
 raw <- read.xlsx(input_file)
@@ -122,22 +122,33 @@ if (!0 %in% weeks_found) {
   message("✅ 成功抓取 Week 0")
 }
 
-# 清洗 Group 欄位
+# 清洗 Group 欄位 (無死角防護網)
 long <- long %>%
   mutate(
-    Group = trimws(as.character(Group)),
+    # 1. 徹底清除前後空白，轉半形，並轉為大寫防呆
+    Group_clean = toupper(trimws(as.character(Group))),
+    # 2. 全面映射：涵蓋 A/B、0/1、CONTROL/EXP、C/E、全形Ａ/Ｂ
     Group = case_when(
-      Group == "0" ~ "A",
-      Group == "1" ~ "B",
-      tolower(Group) == "control" ~ "A",
-      tolower(Group) == "exp" ~ "B",
-      TRUE ~ Group
+      Group_clean %in% c("A", "0", "CONTROL", "C", "\uff21") ~ "placebo", # \uff21 = 全形Ａ
+      Group_clean %in% c("B", "1", "EXP", "E", "\uff22") ~ "PS150", # \uff22 = 全形Ｂ
+      TRUE ~ NA_character_ # 出現以上以外的意外值，強制轉為 NA 以利除錯
     ),
-    Group = factor(Group, levels = c("A", "B"))
-  )
+    # 3. 轉換為 Factor 並鎖定順序
+    Group = factor(Group, levels = c("placebo", "PS150"))
+  ) %>%
+  select(-Group_clean) # 移除過渡欄位
+
+# 安全性檢查：報告 Group 清洗結果
+na_count <- sum(is.na(long$Group))
+if (na_count > 0) {
+  warning(sprintf("⚠️ Group 清洗後仍有 %d 筆 NA，請檢查原始資料中的 Group 欄位值！", na_count))
+} else {
+  message("✅ Group 欄位清洗完成，全部成功映射")
+}
+message("  Group 分布：", paste(capture.output(table(long$Group, useNA = "ifany")), collapse = "\n  "))
 
 # ==============================================================================
-# === 4. 基礎統計 ===
+# === 4. 基礎統計 ====
 # ==============================================================================
 message(">>> [4/10] 執行基礎統計 (Descriptive, Normality, Correlation)...")
 
@@ -195,7 +206,14 @@ normality_tests_grouped <- function(long_df,
 }
 norm_results <- normality_tests_grouped(long)
 
-# C. 相關性
+# C. 合併敘述統計與常態檢定結果
+desc_data <- desc_data %>%
+  left_join(
+    norm_results %>% select(variable, Group, week_numeric, shapiro_p, is_normal),
+    by = c("variable", "Group", "week_numeric")
+  )
+
+# D. 相關性
 cor_results <- tryCatch(
   {
     df_cor <- long %>%
@@ -211,10 +229,12 @@ cor_results <- tryCatch(
 )
 
 # ==============================================================================
-# === 5. GEE 分析 ===
+# === 5. GEE 分析 ====
 # ==============================================================================
 message(">>> [5/10] 執行 GEE 分析...")
 
+gee_best_res <- list(summary = data.frame(), pw_group = data.frame(), pw_time = data.frame())
+gee_spec_res <- list(summary = data.frame(), pw_group = data.frame(), pw_time = data.frame())
 f_gee <- as.formula("score ~ Group * week_factor")
 
 calc_posthoc <- function(mod, variable_name, corstr_label, logic_label) {
@@ -226,32 +246,33 @@ calc_posthoc <- function(mod, variable_name, corstr_label, logic_label) {
       as.data.frame() %>%
       mutate(Variable = variable_name, Structure = corstr_label, Logic = logic_label) %>%
       rownames_to_column("Term"),
-    error = function(e) NULL
+    error = function(e) {
+      message("    ⚠️ anova 失敗: ", e$message)
+      NULL
+    }
   )
   pg <- tryCatch(
     emmeans(mod, ~ Group | week_factor) %>%
       pairs(reverse = TRUE, adjust = "none") %>%
       as.data.frame() %>%
       mutate(Variable = variable_name, Structure = corstr_label, Logic = logic_label),
-    error = function(e) NULL
+    error = function(e) {
+      message("    ⚠️ emmeans(Group) 失敗: ", e$message)
+      NULL
+    }
   )
   pt <- tryCatch(
     emmeans(mod, ~ week_factor | Group) %>%
       pairs(reverse = TRUE, adjust = "none") %>%
       as.data.frame() %>%
       mutate(Variable = variable_name, Structure = corstr_label, Logic = logic_label),
-    error = function(e) NULL
+    error = function(e) {
+      message("    ⚠️ emmeans(Time) 失敗: ", e$message)
+      NULL
+    }
   )
   list(wald = wald, group = pg, time = pt)
 }
-
-# 使用 list 收集結果，最後一次性合併 (避免逐步 bind_rows 的 O(n²) 開銷)
-gee_best_wald <- vector("list", length(outcome_base_vars))
-gee_best_group <- vector("list", length(outcome_base_vars))
-gee_best_time <- vector("list", length(outcome_base_vars))
-gee_spec_wald <- vector("list", length(outcome_base_vars))
-gee_spec_group <- vector("list", length(outcome_base_vars))
-gee_spec_time <- vector("list", length(outcome_base_vars))
 
 pb_gee <- txtProgressBar(min = 0, max = length(outcome_base_vars), style = 3)
 for (i in seq_along(outcome_base_vars)) {
@@ -264,11 +285,17 @@ for (i in seq_along(outcome_base_vars)) {
   if (nrow(df_sub) >= MIN_GEE_SAMPLES) {
     m_ar1 <- tryCatch(
       geeglm(f_gee, data = df_sub, id = ID, family = gaussian, corstr = "ar1"),
-      error = function(e) NULL
+      error = function(e) {
+        message("  ⚠️ [", outcome, "] AR1 模型失敗: ", e$message)
+        NULL
+      }
     )
     m_exch <- tryCatch(
       geeglm(f_gee, data = df_sub, id = ID, family = gaussian, corstr = "exchangeable"),
-      error = function(e) NULL
+      error = function(e) {
+        message("  ⚠️ [", outcome, "] Exchangeable 模型失敗: ", e$message)
+        NULL
+      }
     )
 
     q_ar1 <- if (!is.null(m_ar1)) QIC(m_ar1)[1] else Inf
@@ -286,77 +313,88 @@ for (i in seq_along(outcome_base_vars)) {
 
     if (!is.null(best_mod)) {
       ph <- calc_posthoc(best_mod, outcome, best_cor, "Best_Fit")
-      gee_best_wald[[i]] <- ph$wald
-      gee_best_group[[i]] <- ph$group
-      gee_best_time[[i]] <- ph$time
+      gee_best_res$summary <- bind_rows(gee_best_res$summary, ph$wald)
+      gee_best_res$pw_group <- bind_rows(gee_best_res$pw_group, ph$group)
+      gee_best_res$pw_time <- bind_rows(gee_best_res$pw_time, ph$time)
+    } else {
+      message("  ⚠️ [", outcome, "] Best-fit 模型為 NULL，跳過")
     }
 
     spec_mod <- if (best_cor == "ar1" && !is.null(best_mod)) best_mod else m_ar1
     if (!is.null(spec_mod)) {
       ph_s <- calc_posthoc(spec_mod, outcome, "ar1", "Specified")
-      gee_spec_wald[[i]] <- ph_s$wald
-      gee_spec_group[[i]] <- ph_s$group
-      gee_spec_time[[i]] <- ph_s$time
+      gee_spec_res$summary <- bind_rows(gee_spec_res$summary, ph_s$wald)
+      gee_spec_res$pw_group <- bind_rows(gee_spec_res$pw_group, ph_s$group)
+      gee_spec_res$pw_time <- bind_rows(gee_spec_res$pw_time, ph_s$time)
+    } else {
+      message("  ⚠️ [", outcome, "] AR1 指定模型為 NULL，跳過")
     }
+  } else {
+    message("  ⚠️ [", outcome, "] 觀測數不足 (n=", nrow(df_sub), " < ", MIN_GEE_SAMPLES, ")，跳過 GEE")
   }
   setTxtProgressBar(pb_gee, i)
 }
 close(pb_gee)
 
-# 一次性合併所有 GEE 結果
-gee_best_res <- list(
-  summary  = bind_rows(gee_best_wald),
-  pw_group = bind_rows(gee_best_group),
-  pw_time  = bind_rows(gee_best_time)
+# --- GEE 診斷訊息 ---
+message(
+  "  📊 GEE Best-fit 結果: summary=", nrow(gee_best_res$summary),
+  " rows, pw_group=", nrow(gee_best_res$pw_group),
+  " rows, pw_time=", nrow(gee_best_res$pw_time), " rows"
 )
-gee_spec_res <- list(
-  summary  = bind_rows(gee_spec_wald),
-  pw_group = bind_rows(gee_spec_group),
-  pw_time  = bind_rows(gee_spec_time)
+message(
+  "  📊 GEE AR1 結果: summary=", nrow(gee_spec_res$summary),
+  " rows, pw_group=", nrow(gee_spec_res$pw_group),
+  " rows, pw_time=", nrow(gee_spec_res$pw_time), " rows"
 )
-
 message("✅ GEE 分析完成")
 
 # ==============================================================================
-# === 6. 匯出 Excel ===
+# === 6. 匯出 Excel ====
 # ==============================================================================
 message(">>> [6/10] 匯出 Excel 報表...")
 wb <- createWorkbook()
 
-addWorksheet(wb, "Descriptive")
-writeData(wb, "Descriptive", desc_data)
-
-addWorksheet(wb, "Normality")
-writeData(wb, "Normality", norm_results)
+# --- 合併 Descriptive + Normality 到同一個 sheet ---
+addWorksheet(wb, "Desc_Normality")
+writeData(wb, "Desc_Normality", desc_data)
 
 if (!is.null(cor_results)) {
   addWorksheet(wb, "Correlation")
   writeData(wb, "Correlation", cor_results)
 }
 
+# --- GEE Best-fit 結果 (無條件建立 sheet，空結果也匯出以利除錯) ---
+addWorksheet(wb, "GEE_Best_Main")
+addWorksheet(wb, "GEE_Best_Group")
+addWorksheet(wb, "GEE_Best_Time")
 if (nrow(gee_best_res$summary) > 0) {
-  addWorksheet(wb, "GEE_Best_Main")
   writeData(wb, "GEE_Best_Main", gee_best_res$summary)
-  addWorksheet(wb, "GEE_Best_Group")
   writeData(wb, "GEE_Best_Group", gee_best_res$pw_group)
-  addWorksheet(wb, "GEE_Best_Time")
   writeData(wb, "GEE_Best_Time", gee_best_res$pw_time)
+} else {
+  writeData(wb, "GEE_Best_Main", data.frame(Note = "GEE Best-fit 無結果，請檢查 console 診斷訊息"))
+  warning("⚠️ GEE Best-fit 結果為空，已建立空白 sheet")
 }
 
+# --- GEE AR1 指定結構結果 ---
+addWorksheet(wb, "GEE_AR1_Main")
+addWorksheet(wb, "GEE_AR1_Group")
+addWorksheet(wb, "GEE_AR1_Time")
 if (nrow(gee_spec_res$summary) > 0) {
-  addWorksheet(wb, "GEE_AR1_Main")
   writeData(wb, "GEE_AR1_Main", gee_spec_res$summary)
-  addWorksheet(wb, "GEE_AR1_Group")
   writeData(wb, "GEE_AR1_Group", gee_spec_res$pw_group)
-  addWorksheet(wb, "GEE_AR1_Time")
   writeData(wb, "GEE_AR1_Time", gee_spec_res$pw_time)
+} else {
+  writeData(wb, "GEE_AR1_Main", data.frame(Note = "GEE AR1 無結果，請檢查 console 診斷訊息"))
+  warning("⚠️ GEE AR1 結果為空，已建立空白 sheet")
 }
 
 saveWorkbook(wb, output_file, overwrite = TRUE)
 message("✅ Excel 匯出完成！")
 
 # ==============================================================================
-# === 7. 繪圖設定 ===
+# === 7. 繪圖設定 ====
 # ==============================================================================
 message(">>> [7/10] 初始化繪圖設定...")
 folder_date <- format(Sys.Date(), "%y%m%d")
@@ -376,10 +414,13 @@ plot_sum <- desc_data %>% rename(measure = variable, avg = mean, se = sem)
 use_ar1 <- nrow(gee_spec_res$pw_time) > 0
 
 # ==============================================================================
-# === 8. 繪圖函數定義 ===
+# === 8. 繪圖函數定義 ====
 # ==============================================================================
 
-#' 建立基礎折線圖 (Mean ± SEM)
+# 定義統一的錯開寬度，避免兩組資料點 / Error bar 完全重疊
+pd <- position_dodge(0.15)
+
+#' 1. 建立基礎折線圖 (保留 Error bar，加入 position_dodge)
 #'
 #' @param df_s  描述統計摘要資料 (含 week_numeric, avg, se, Group)
 #' @param measure_name  變數名稱 (用於標題)
@@ -390,9 +431,9 @@ create_base_line_plot <- function(df_s, measure_name, y_breaks) {
     x = week_numeric, y = avg, group = Group,
     color = Group, shape = Group
   )) +
-    geom_line(linewidth = 1.2, alpha = 0.8) +
-    geom_point(size = 4) +
-    geom_errorbar(aes(ymin = avg - se, ymax = avg + se), width = 0.2) +
+    geom_line(linewidth = 1.2, alpha = 0.8, position = pd) +
+    geom_point(size = 4, position = pd) +
+    geom_errorbar(aes(ymin = avg - se, ymax = avg + se), width = 0.2, position = pd) +
     scale_x_continuous(
       breaks = sort(unique(df_s$week_numeric)),
       name   = "Week",
@@ -401,7 +442,7 @@ create_base_line_plot <- function(df_s, measure_name, y_breaks) {
     scale_y_continuous(breaks = y_breaks, limits = range(y_breaks)) +
     scale_color_manual(values = COLOR_PALETTE) +
     scale_shape_manual(values = SHAPE_PALETTE) +
-    labs(title = measure_name, subtitle = "Mean ± SEM", y = "Value") +
+    labs(title = measure_name, y = "Value") +
     theme_classic() +
     theme(
       aspect.ratio = 1,
@@ -415,53 +456,84 @@ create_base_line_plot <- function(df_s, measure_name, y_breaks) {
     )
 }
 
-#' 加上顯著性標註的折線圖
+#' 2. 建立無 Error bar 版折線圖 (僅有均值點線，供簡報等場合使用)
 #'
-#' @param p  基礎 ggplot 折線圖
-#' @param df_s  含標註欄位的資料框 (label_A, label_B, label_AB)
-#' @param pmax  Y 軸上方標註位置
+#' @param df_s  描述統計摘要資料 (含 week_numeric, avg, se, Group)
+#' @param measure_name  變數名稱 (用於標題)
+#' @param y_breaks  Y 軸刻度
 #' @return ggplot 物件
+create_base_line_plot_no_se <- function(df_s, measure_name, y_breaks) {
+  ggplot(df_s, aes(
+    x = week_numeric, y = avg, group = Group,
+    color = Group, shape = Group
+  )) +
+    geom_line(linewidth = 1.2, alpha = 0.8, position = pd) +
+    geom_point(size = 4, position = pd) +
+    # 刻意不加 geom_errorbar
+    scale_x_continuous(
+      breaks = sort(unique(df_s$week_numeric)),
+      name   = "Week",
+      expand = expansion(mult = 0.1)
+    ) +
+    scale_y_continuous(breaks = y_breaks, limits = range(y_breaks)) +
+    scale_color_manual(values = COLOR_PALETTE) +
+    scale_shape_manual(values = SHAPE_PALETTE) +
+    labs(title = measure_name, y = "Value") +
+    theme_classic() +
+    theme(
+      aspect.ratio = 1,
+      plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 16, hjust = 0.5),
+      axis.title = element_text(size = 20, face = "bold"),
+      axis.text = element_text(size = 18, color = "black", face = "bold"),
+      legend.position = c(0.99, 0.99),
+      legend.justification = c("right", "top"),
+      legend.text = element_text(size = 14)
+    )
+}
+
+#' 3. 加上顯著性標註 (加入 position_dodge 與動態高度避開 Error bar)
 add_annotations <- function(p, df_s, pmax) {
+  # 計算一個安全的 Y 軸間距 (取數據全距的 4% 作為緩衝)
+  y_offset <- (max(df_s$avg + df_s$se, na.rm = TRUE) - min(df_s$avg - df_s$se, na.rm = TRUE)) * 0.04
+
   p +
-    geom_text(aes(label = label_A, y = avg + se),
-      vjust = -0.5, size = 7, show.legend = FALSE, na.rm = TRUE
+    # 組內顯著性標記 (* / #)：加上 y_offset 安全距離 + position_dodge
+    geom_text(aes(label = label_time, y = avg + se + y_offset),
+      vjust = 0, size = 7, show.legend = FALSE, na.rm = TRUE, position = pd
     ) +
-    geom_text(aes(label = label_B, y = avg + se),
-      vjust = -0.5, size = 6, show.legend = FALSE, na.rm = TRUE
-    ) +
+    # 組間顯著性標記 ($)：置於圖表上方
     geom_text(
       data = df_s %>% filter(!is.na(label_AB)),
       aes(label = label_AB, x = week_numeric, y = pmax),
       color = "black", vjust = 1, size = 6, show.legend = FALSE, na.rm = TRUE
     ) +
-    labs(subtitle = "Mean ± SEM (*:A vs Pre, #:B vs Pre, $:A vs B)")
+    labs(subtitle = "(*: placebo vs Pre, #: PS150 vs Pre, $: placebo vs PS150)")
 }
 
-#' 建立長期趨勢散佈圖 (含線性回歸)
-#'
-#' @param plot_df  長格式資料 (含 week_numeric, value, Group)
-#' @param measure_name  變數名稱 (用於標題)
-#' @param plot_top_limit  Y 軸上限
-#' @return ggplot 物件
+## 長期趨勢散佈圖 (含線性回歸)-----
 create_trend_plot <- function(plot_df, measure_name, plot_top_limit) {
+  # 創建統一的 Jitter，確保點跟線的位移完全一致
+  pos_jitter <- position_jitter(width = 0.15, seed = 42)
+
   ggplot(plot_df, aes(x = week_numeric, y = value, color = Group, fill = Group)) +
-    geom_point(alpha = 0.4, size = 2.5, position = position_jitter(width = 0.15)) +
+    geom_point(alpha = 0.4, size = 2.5, position = pos_jitter) +
     geom_smooth(method = "lm", se = TRUE, alpha = 0.15, linewidth = 1.5) +
+
+    # 使用 output.type = "text" 並手動加上顯著性星號
     stat_cor(
-      data = plot_df %>% filter(Group == "A"),
-      aes(label = paste("'A:'~", after_stat(r.label), "~','~", after_stat(p.label), sep = "")),
+      data = plot_df %>% filter(Group == "placebo"),
+      aes(label = paste0("placebo: ", after_stat(r.label), ", ", after_stat(p.label), ifelse(after_stat(p) < 0.05, " *", ""))),
       method = "pearson", label.x.npc = 0.05, label.y.npc = 0.96,
-      size = 6, geom = "label",
-      fill = "white", color = "black", label.size = NA,
-      alpha = 0.8, fontface = "bold", show.legend = FALSE
+      size = 6, geom = "label", fill = "white", color = "black",
+      alpha = 0.8, fontface = "bold", show.legend = FALSE, output.type = "text"
     ) +
     stat_cor(
-      data = plot_df %>% filter(Group == "B"),
-      aes(label = paste("'B:'~", after_stat(r.label), "~','~", after_stat(p.label), sep = "")),
+      data = plot_df %>% filter(Group == "PS150"),
+      aes(label = paste0("PS150: ", after_stat(r.label), ", ", after_stat(p.label), ifelse(after_stat(p) < 0.05, " *", ""))),
       method = "pearson", label.x.npc = 0.05, label.y.npc = 0.86,
-      size = 6, geom = "label",
-      fill = "white", color = "black", label.size = NA,
-      alpha = 0.8, fontface = "bold", show.legend = FALSE
+      size = 6, geom = "label", fill = "white", color = "black",
+      alpha = 0.8, fontface = "bold", show.legend = FALSE, output.type = "text"
     ) +
     scale_color_manual(values = COLOR_PALETTE) +
     scale_fill_manual(values = COLOR_PALETTE) +
@@ -488,36 +560,44 @@ create_trend_plot <- function(plot_df, measure_name, plot_top_limit) {
     )
 }
 
-#' Spaghetti 版：長期趨勢散佈圖 (加入個體連線)
-#' 圖層順序：底層=個體連線, 中層=散佈點, 最上層=整體回歸線
-#'
-#' @param plot_df  長格式資料 (含 ID, week_numeric, value, Group)
-#' @param measure_name  變數名稱 (用於標題)
-#' @param plot_top_limit  Y 軸上限
-#' @return ggplot 物件
+## Spaghetti 版：長期趨勢散佈圖 (加入個體連線)----
 create_trend_plot_spaghetti <- function(plot_df, measure_name, plot_top_limit) {
+  # 動態計算 rmcorr，並自動判斷是否加上星號
+  calc_rmcorr_label <- function(df_subset, group_name) {
+    tryCatch(
+      {
+        df_clean <- df_subset %>% drop_na(value, week_numeric)
+        res <- rmcorr::rmcorr(participant = ID, measure1 = week_numeric, measure2 = value, dataset = df_clean)
+        sig_mark <- ifelse(res$p < 0.05, " *", "")
+        sprintf("%s (Within): r_rm = %.3f, p = %.3f%s", group_name, res$r, res$p, sig_mark)
+      },
+      error = function(e) {
+        paste0(group_name, " (Within): NA")
+      }
+    )
+  }
+
+  label_placebo <- calc_rmcorr_label(plot_df %>% filter(Group == "placebo"), "placebo")
+  label_ps150 <- calc_rmcorr_label(plot_df %>% filter(Group == "PS150"), "PS150")
+  label_x_pos <- min(plot_df$week_numeric, na.rm = TRUE) + 0.1
+
+  # 創建統一的 Jitter
+  pos_jitter <- position_jitter(width = 0.15, seed = 42)
+
   ggplot(plot_df, aes(x = week_numeric, y = value, color = Group, fill = Group)) +
-    # 【底層】個體連線 (Spaghetti lines)：描繪每位受試者隨時間變化的軌跡
-    geom_line(aes(group = ID), alpha = 0.2, linewidth = 0.5) +
-    # 【中層】散佈點
-    geom_point(alpha = 0.4, size = 2.5, position = position_jitter(width = 0.15)) +
-    # 【最上層】整體平滑回歸線
+    # 【修復】讓點跟線共用同一個 Jitter，保證完美相連
+    geom_line(aes(group = ID), alpha = 0.2, linewidth = 0.5, position = pos_jitter) +
+    geom_point(alpha = 0.4, size = 2.5, position = pos_jitter) +
     geom_smooth(method = "lm", se = TRUE, alpha = 0.15, linewidth = 1.5) +
-    stat_cor(
-      data = plot_df %>% filter(Group == "A"),
-      aes(label = paste("'A:'~", after_stat(r.label), "~','~", after_stat(p.label), sep = "")),
-      method = "pearson", label.x.npc = 0.05, label.y.npc = 0.96,
-      size = 6, geom = "label",
-      fill = "white", color = "black", label.size = NA,
-      alpha = 0.8, fontface = "bold", show.legend = FALSE
+    annotate("label",
+      x = label_x_pos, y = plot_top_limit * 0.95,
+      label = label_placebo, color = "#31688E", fill = "white",
+      fontface = "bold", hjust = 0, size = 5
     ) +
-    stat_cor(
-      data = plot_df %>% filter(Group == "B"),
-      aes(label = paste("'B:'~", after_stat(r.label), "~','~", after_stat(p.label), sep = "")),
-      method = "pearson", label.x.npc = 0.05, label.y.npc = 0.86,
-      size = 6, geom = "label",
-      fill = "white", color = "black", label.size = NA,
-      alpha = 0.8, fontface = "bold", show.legend = FALSE
+    annotate("label",
+      x = label_x_pos, y = plot_top_limit * 0.88,
+      label = label_ps150, color = "#E67E22", fill = "white",
+      fontface = "bold", hjust = 0, size = 5
     ) +
     scale_color_manual(values = COLOR_PALETTE) +
     scale_fill_manual(values = COLOR_PALETTE) +
@@ -529,7 +609,7 @@ create_trend_plot_spaghetti <- function(plot_df, measure_name, plot_top_limit) {
     ) +
     labs(
       title    = paste0("Trend: ", measure_name),
-      subtitle = "Spaghetti Plot + Linear Regression",
+      subtitle = "Spaghetti Plot with Repeated Measures Correlation (rmcorr)",
       y        = "Value"
     ) +
     theme_bw() +
@@ -544,6 +624,8 @@ create_trend_plot_spaghetti <- function(plot_df, measure_name, plot_top_limit) {
     )
 }
 
+## Pairplot----
+
 #' 繪製並儲存 Pairplot (相關矩陣圖)
 #'
 #' @param data  長格式資料
@@ -554,7 +636,7 @@ plot_pair <- function(data, vars, title_suffix, save_dir) {
   df_sub <- data %>%
     select(Group, all_of(vars)) %>%
     na.omit() %>%
-    mutate(Group = factor(Group, levels = c("A", "B")))
+    mutate(Group = factor(Group, levels = c("placebo", "PS150")))
 
   if (nrow(df_sub) == 0) {
     return(invisible(NULL))
@@ -585,55 +667,37 @@ plot_pair <- function(data, vars, title_suffix, save_dir) {
   )
 }
 
+
 # ==============================================================================
 # === 9. 繪圖：Annotated & Pure (折線圖) ===
 # ==============================================================================
 message(">>> [8/10] 繪製折線圖 (Trend Plot with SEM)...")
 
-# --- 步驟 9.1：在迴圈外預處理 GEE 的顯著性結果，建立對照表 (Lookup Table) ---
-# 目的：消除原本迴圈內的 grepl 字串比對，改用結構化的 regex + left_join
-sig_lookup <- data.frame()
+# --- 步驟 9.1：預處理 GEE 顯著性對照表 (修正為 Long Format 合併) ---
+time_sig <- data.frame(Variable = character(), Group = factor(), week_numeric = numeric(), label_time = character())
+group_sig <- data.frame(Variable = character(), week_numeric = numeric(), label_AB = character())
 
 if (use_ar1) {
   # === 處理組內時間比較 (vs 基線) ===
-  # contrast 欄位格式為 "week_factorX - week_factorY"，用正則提取數字
   time_sig <- gee_spec_res$pw_time %>%
     mutate(
-      # 提取 contrast 中 "-" 前方的 week_factor 數字
       week_1 = as.numeric(str_extract(contrast, "(?<=week_factor)\\d+(?=\\s*-)")),
-      # 提取 contrast 中 "-" 後方的 week_factor 數字
       week_2 = as.numeric(str_extract(contrast, "(?<=-\\sweek_factor)\\d+"))
     ) %>%
-    # 篩選出與基線 (Week 0) 比較的列
     filter(week_1 == 0 | week_2 == 0) %>%
     mutate(
-      # 找出「非 0」的那個 week 作為目標週數
       week_numeric = ifelse(week_1 == 0, week_2, week_1),
       is_sig = p.value < ALPHA_SIGNIFICANCE,
-      # 依 Group 產生專屬標記：A 組用 "*", B 組用 "#"
-      label = case_when(
-        is_sig & Group == "A" ~ "*",
-        is_sig & Group == "B" ~ "#",
+      label_time = case_when(
+        is_sig & Group == "placebo" ~ "*",
+        is_sig & Group == "PS150" ~ "#",
         TRUE ~ NA_character_
       )
     ) %>%
-    filter(!is.na(label)) %>%
-    select(Variable, Group, week_numeric, label)
+    filter(!is.na(label_time)) %>%
+    select(Variable, Group, week_numeric, label_time)
 
-  # 轉為寬格式，自動產生 label_A 與 label_B 欄位
-  if (nrow(time_sig) > 0) {
-    time_sig_wide <- time_sig %>%
-      pivot_wider(
-        id_cols = c(Variable, week_numeric),
-        names_from = Group,
-        values_from = label,
-        names_prefix = "label_"
-      )
-  } else {
-    time_sig_wide <- data.frame(Variable = character(), week_numeric = numeric())
-  }
-
-  # === 處理組間比較 (同一時間點 A vs B) ===
+  # === 處理組間比較 (同一時間點 placebo vs PS150) ===
   group_sig <- gee_spec_res$pw_group %>%
     mutate(
       week_numeric = as.numeric(as.character(week_factor)),
@@ -643,13 +707,9 @@ if (use_ar1) {
     filter(!is.na(label_AB)) %>%
     select(Variable, week_numeric, label_AB) %>%
     distinct()
-
-  # 將時間標記與組間標記合併成單一對照表
-  sig_lookup <- time_sig_wide %>%
-    full_join(group_sig, by = c("Variable", "week_numeric"))
 }
 
-# --- 步驟 9.2：開始繪圖 (使用 left_join 取代巢狀迴圈) ---
+# --- 步驟 9.2：開始繪圖 ---
 vars_to_plot <- unique(plot_sum$measure)
 pb_line <- txtProgressBar(min = 0, max = length(vars_to_plot), style = 3)
 
@@ -662,29 +722,30 @@ for (i in seq_along(vars_to_plot)) {
     next
   }
 
-  # 將對照表的顯著性標註透過 left_join 直接合併到摘要數據上
-  if (use_ar1 && nrow(sig_lookup) > 0) {
-    lookup_sub <- sig_lookup %>%
+  # 乾淨的 Left Join：組內與組間分開合併，確保各組只拿自己的標記
+  if (use_ar1) {
+    sub_time <- time_sig %>%
       filter(Variable == m) %>%
       select(-Variable)
-    df_s <- df_s %>% left_join(lookup_sub, by = "week_numeric")
+    sub_group <- group_sig %>%
+      filter(Variable == m) %>%
+      select(-Variable)
+
+    df_s <- df_s %>%
+      left_join(sub_time, by = c("Group", "week_numeric")) %>%
+      left_join(sub_group, by = "week_numeric")
   }
 
-  # 防呆機制：確保必要的標記欄位存在 (若全都不顯著，left_join 可能不會產生該欄位)
-  if (!"label_A" %in% names(df_s)) df_s$label_A <- NA
-  if (!"label_B" %in% names(df_s)) df_s$label_B <- NA
+  if (!"label_time" %in% names(df_s)) df_s$label_time <- NA
   if (!"label_AB" %in% names(df_s)) df_s$label_AB <- NA
 
-  # 確保基準線 (Week 0) 上不會有比較標記
   base_w <- min(df_s$week_numeric, na.rm = TRUE)
   df_s <- df_s %>%
     mutate(
-      label_A  = ifelse(week_numeric == base_w, NA, label_A),
-      label_B  = ifelse(week_numeric == base_w, NA, label_B),
-      label_AB = ifelse(week_numeric == base_w, NA, label_AB)
+      label_time = ifelse(week_numeric == base_w, NA, label_time),
+      label_AB   = ifelse(week_numeric == base_w, NA, label_AB)
     )
 
-  # 計算 Y 軸範圍與標記擺放高度
   ymin <- min(df_s$avg - df_s$se, na.rm = TRUE)
   ymax <- max(df_s$avg + df_s$se, na.rm = TRUE)
   if (ymin == ymax) {
@@ -695,24 +756,21 @@ for (i in seq_along(vars_to_plot)) {
   brks <- pretty(c(ymin, pmax_val), n = 5)
   if (length(brks) > 6) brks <- pretty(c(ymin, pmax_val), n = 4)
 
-  # 繪製並儲存
   p_base <- create_base_line_plot(df_s, m, brks)
   p_anno <- add_annotations(p_base, df_s, pmax_val)
 
-  ggsave(file.path(diary_path_anno, paste0(m, "_Annotated.png")),
-    p_anno,
-    width = 8, height = 8, bg = "white"
-  )
-  ggsave(file.path(diary_path_pure, paste0(m, "_Pure.png")),
-    p_base,
-    width = 8, height = 8, bg = "white"
-  )
+  # 新增無 Error bar 版本
+  p_base_no_se <- create_base_line_plot_no_se(df_s, m, brks)
+  p_anno_no_se <- add_annotations(p_base_no_se, df_s, pmax_val)
+
+  ggsave(file.path(diary_path_anno, paste0(m, "_Annotated.png")), p_anno, width = 8, height = 8, bg = "white")
+  ggsave(file.path(diary_path_pure, paste0(m, "_Pure.png")), p_base, width = 8, height = 8, bg = "white")
+  ggsave(file.path(diary_path_anno, paste0(m, "_Annotated_NoSE.png")), p_anno_no_se, width = 8, height = 8, bg = "white")
 
   setTxtProgressBar(pb_line, i)
 }
 close(pb_line)
 message("✅ 折線圖繪製完成")
-
 # ==============================================================================
 # === 10. 繪圖：Correlation Pairplots ===
 # ==============================================================================
@@ -748,6 +806,7 @@ pb_trend <- txtProgressBar(min = 0, max = length(trend_vars), style = 3)
 for (i in seq_along(trend_vars)) {
   m <- trend_vars[i]
   plot_df <- trend_data %>% filter(measure == m)
+
   if (nrow(plot_df) < 10) {
     setTxtProgressBar(pb_trend, i)
     next
@@ -758,14 +817,14 @@ for (i in seq_along(trend_vars)) {
   y_range <- y_max_val - y_min_val
   plot_top_limit <- y_max_val + (y_range * 0.35)
 
-  # 原版趨勢圖 (僅散佈點 + 回歸線)
+  # 原版趨勢圖 (僅散佈點 + 回歸線，無 label.size 警告)
   p_trend_orig <- create_trend_plot(plot_df, m, plot_top_limit)
   ggsave(file.path(diary_path_trend, paste0(m, "_LinearTrend.png")),
     p_trend_orig,
     width = 8, height = 8, bg = "white"
   )
 
-  # Spaghetti 版趨勢圖 (加入個體連線)
+  # Spaghetti 版趨勢圖 (加入個體連線 & rmcorr 標註)
   p_trend_spag <- create_trend_plot_spaghetti(plot_df, m, plot_top_limit)
   ggsave(file.path(diary_path_trend, paste0(m, "_Spaghetti.png")),
     p_trend_spag,
@@ -776,6 +835,7 @@ for (i in seq_along(trend_vars)) {
 }
 close(pb_trend)
 message("✅ 趨勢圖繪製完成")
+
 
 message("\n==============================================")
 message("🎉🎉🎉 全部流程執行完畢！所有圖表已生成 🎉🎉🎉")

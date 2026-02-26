@@ -74,7 +74,7 @@ $$\text{week} * \text{group} = \text{week} + \text{group} + \text{week}:\text{gr
 
 ## 六、模型選擇
 
-**QIC (Quasilikelihood Information Criterion)**：用於模型擬合優度檢驗的準則，數值越小越好。
+**[[AIC_vs_QIC_Model_Selection]]**：用於模型擬合優度檢驗的準則，數值越小越好。
 
 ---
 

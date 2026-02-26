@@ -293,11 +293,11 @@ diff_u_results_df <- bind_rows(diff_test_u_list)
 message("  -> 差值檢定筆數: ", nrow(diff_t_results_df))
 
 # ==============================================================================
-# === 6.5 核心統計 III：改變量回歸分析 (Regression on Change Scores) ====
+# === 6.4 核心統計 III-A：改變量回歸分析 (無控制 Delta_MEQ) ====
 # ==============================================================================
-# 公式: ΔOutcome ~ Group + ΔMEQ + Outcome_pre
-# 目的: 控制基期效應與 MEQ 變化量後，檢驗 Group 對各量表改變量的影響
-message("--- [Step 6.5] 執行改變量回歸分析 ---")
+# 公式: ΔOutcome ~ Group + Outcome_pre
+# 目的: 僅控制基期效應後，檢驗 Group 對各量表改變量的影響
+message("--- [Step 6.4] 執行改變量回歸分析 (無控制 Delta_MEQ) ---")
 
 # 1. 建立回歸用資料 (計算 Delta)
 reg_data <- wide_data_pre_post %>%
@@ -308,6 +308,94 @@ reg_data <- wide_data_pre_post %>%
     Delta_BAI  = BAI_post - BAI_pre,
     Delta_MEQ  = MEQ_post - MEQ_pre
   )
+
+# 2. 設定目標量表與對應欄位
+reg_targets <- list(
+  list(name = "PSQI", delta = "Delta_PSQI", baseline = "PSQI_pre"),
+  list(name = "ISI", delta = "Delta_ISI", baseline = "ISI_pre"),
+  list(name = "BDI", delta = "Delta_BDI", baseline = "BDI_pre"),
+  list(name = "BAI", delta = "Delta_BAI", baseline = "BAI_pre")
+)
+
+# 3. 逐一跑回歸並收集結果
+reg_no_meq_results_list <- list()
+
+for (tgt in reg_targets) {
+  # 建立公式: Delta_X ~ Group + X_pre
+  formula_str <- paste0(tgt$delta, " ~ Group + ", tgt$baseline)
+  formula_obj <- as.formula(formula_str)
+
+  # 選取完整個案
+  vars_needed <- c(tgt$delta, "Group", tgt$baseline)
+  reg_sub <- reg_data %>%
+    select(all_of(vars_needed)) %>%
+    filter(complete.cases(.))
+
+  if (nrow(reg_sub) < 5) next
+
+  # 執行回歸
+  fit <- lm(formula_obj, data = reg_sub)
+  s <- summary(fit)
+
+  # 提取係數表
+  coef_df <- as.data.frame(s$coefficients)
+  coef_df$Term <- rownames(coef_df)
+  rownames(coef_df) <- NULL
+
+  # 整理 Term 名稱
+  coef_df$Term <- gsub("\\(Intercept\\)", "Intercept", coef_df$Term)
+  coef_df$Term <- gsub("GroupB", "Group (B vs A)", coef_df$Term)
+  coef_df$Term <- gsub(tgt$baseline, paste0("Baseline_", tgt$name), coef_df$Term)
+
+  # 顯著性標記
+  coef_df$Sig <- ifelse(coef_df$`Pr(>|t|)` < 0.001, "***",
+    ifelse(coef_df$`Pr(>|t|)` < 0.01, "**",
+      ifelse(coef_df$`Pr(>|t|)` < 0.05, "*",
+        ifelse(coef_df$`Pr(>|t|)` < 0.1, ".", "ns")
+      )
+    )
+  )
+
+  f_stat <- s$fstatistic
+  f_p <- if (!is.null(f_stat)) pf(f_stat[1], f_stat[2], f_stat[3], lower.tail = FALSE) else NA
+
+  result_df <- tibble(
+    Target_Outcome    = tgt$name,
+    Control_Variable  = "None",
+    Formula           = formula_str,
+    Term              = coef_df$Term,
+    Estimate          = round(coef_df$Estimate, 4),
+    Std_Error         = round(coef_df$`Std. Error`, 4),
+    t_value           = round(coef_df$`t value`, 4),
+    p_value           = round(coef_df$`Pr(>|t|)`, 4),
+    Sig               = coef_df$Sig,
+    R_squared         = round(s$r.squared, 4),
+    Adj_R_squared     = round(s$adj.r.squared, 4),
+    F_statistic       = if (!is.null(f_stat)) round(f_stat[1], 4) else NA,
+    F_p_value         = if (!is.na(f_p)) round(f_p, 4) else NA,
+    N                 = nrow(reg_sub)
+  )
+
+  reg_no_meq_results_list[[tgt$name]] <- result_df
+
+  message(
+    "  -> ", tgt$name, " (No MEQ): N=", nrow(reg_sub),
+    ", R²=", round(s$r.squared, 3),
+    ", Group p=", round(coef_df$`Pr(>|t|)`[coef_df$Term == "Group (B vs A)"], 4)
+  )
+}
+
+reg_no_meq_results_df <- bind_rows(reg_no_meq_results_list)
+
+# ==============================================================================
+# === 6.5 核心統計 III-B：改變量回歸分析 (控制 Delta_MEQ) ====
+# ==============================================================================
+# 公式: ΔOutcome ~ Group + ΔMEQ + Outcome_pre
+# 目的: 控制基期效應與 MEQ 變化量後，檢驗 Group 對各量表改變量的影響
+message("--- [Step 6.5] 執行改變量回歸分析 (控制 Delta_MEQ) ---")
+
+# 1. 之前已建立 reg_data，直接沿用即可
+
 
 # 2. 設定目標量表與對應欄位
 reg_targets <- list(
@@ -451,10 +539,16 @@ if (nrow(diff_u_results_df) > 0) {
   writeData(wb, "Diff_U", diff_u_results_df)
 }
 
-# 改變量回歸分析結果
+# 改變量回歸分析結果 (無 控制 MEQ)
+if (exists("reg_no_meq_results_df") && nrow(reg_no_meq_results_df) > 0) {
+  addWorksheet(wb, "Reg_No_MEQ")
+  writeData(wb, "Reg_No_MEQ", reg_no_meq_results_df)
+}
+
+# 改變量回歸分析結果 (控制 MEQ)
 if (exists("reg_results_df") && nrow(reg_results_df) > 0) {
-  addWorksheet(wb, "Reg_ChangeScore")
-  writeData(wb, "Reg_ChangeScore", reg_results_df)
+  addWorksheet(wb, "Reg_With_MEQ")
+  writeData(wb, "Reg_With_MEQ", reg_results_df)
 }
 
 saveWorkbook(wb, output_file, overwrite = TRUE)

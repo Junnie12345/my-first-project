@@ -22,45 +22,17 @@
             }
           },
           {
-            "id": "e21d19a143561cc2",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "統計/核心筆記/GEE_Generalized_Estimating_Equations.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "GEE_Generalized_Estimating_Equations"
-            }
-          },
-          {
-            "id": "2b2a28ceea0d9d7f",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "2_Blue_Paragraphs/正念冥想與頭痛教育對成人偏頭痛患者的療效比較.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "正念冥想與頭痛教育對成人偏頭痛患者的療效比較"
-            }
-          },
-          {
             "id": "267802e7a25f8dae",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "訊號分析/HRV運算.md",
+                "file": "統計/核心筆記/Regression_on_Change_Scores.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "HRV運算"
+              "title": "Regression_on_Change_Scores"
             }
           },
           {
@@ -165,7 +137,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "統計/核心筆記/GEE_Generalized_Estimating_Equations.md",
+                "file": "統計/核心筆記/Regression_on_Change_Scores.md",
                 "collapseAll": true,
                 "extraContext": true,
                 "sortOrder": "alphabetical",
@@ -175,7 +147,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "GEE_Generalized_Estimating_Equations 的反向連結"
+              "title": "Regression_on_Change_Scores 的反向連結"
             }
           },
           {
@@ -238,35 +210,38 @@
       "templater-obsidian:Templater": false
     }
   },
-  "active": "e21d19a143561cc2",
+  "active": "267802e7a25f8dae",
   "lastOpenFiles": [
     "統計/2. Statistical_Models_Map.md",
-    "統計/1. 總導覽.md",
-    "統計/核心筆記/Regression_on_Change_Scores.md",
-    "統計/核心筆記/Repeated_Measures_ANOVA.md",
-    "統計/核心筆記/Simple_Multiple_Regression.md",
-    "統計/核心筆記/Structural_Equation_Modeling_SEM.md",
-    "統計/核心筆記/Survival_Analysis.md",
-    "統計/核心筆記/Traditional_ANCOVA.md",
+    "統計/核心筆記/GEE_Generalized_Estimating_Equations.md",
+    "統計/核心筆記/GLM (Generalized Linear Model).md",
     "統計/核心筆記/GLMM_Generalized_Linear_Mixed_Model.md",
     "統計/核心筆記/Hierarchical_Linear_Model_HLM.md",
-    "統計/核心筆記/Poisson_Gamma_Regression.md",
-    "統計/ANOVA, ANCOVA MANOVA.md",
-    "統計/GEE (Generalized estimating equations).md",
-    "統計/GLM (Generalized Linear Model).md",
-    "統計/核心筆記/MANOVA_MANCOVA.md",
-    "統計/核心筆記/Logistic_Regression.md",
     "統計/核心筆記/LMM_Linear_Mixed_Model.md",
-    "統計/核心筆記/GEE_Generalized_Estimating_Equations.md",
+    "統計/核心筆記/MANOVA_MANCOVA.md",
+    "統計/核心筆記/Traditional_ANCOVA.md",
+    "統計/核心筆記/Survival_Analysis.md",
+    "統計/核心筆記/Simple_Multiple_Regression.md",
+    "統計/核心筆記/Repeated_Measures_ANOVA.md",
     "統計/核心筆記/ANOVA_Family.md",
-    "統計/進階統計/1. 總導覽.md",
-    "統計/進階統計/2. Statistical_Models_Map.md",
-    "統計/logistic regression.md",
+    "統計/參考資料/Papers.md",
+    "統計/參考資料/Books.md",
+    "統計/核心筆記/AIC_vs_QIC_Model_Selection.md",
+    "訊號分析/HRV運算.md",
+    "AppliedLongitudinalDataAnalysis.pdf",
+    "Mixed Effects Models and Extensions in Ecology with R.md",
+    "Mixed Effects Models and Extensions in Ecology with R.pdf",
+    "統計/參考資料/論文.md",
+    "統計/1. 總導覽.md",
+    "統計/參考資料/book.md",
+    "統計/資料庫.md",
+    "統計/參考資料",
     "統計/進階統計/Random_Intercept.md",
-    "統計/Poisson_Gamma_Regression.md",
-    "R04_Rplot_stu.pdf",
+    "統計/進階統計/Fixed_Effect.md",
+    "統計/進階統計/AIC_Model_Selection.md",
     "統計/分布/機率分布.md",
     "統計/分布/Posisson distribution.md",
+    "R04_Rplot_stu.pdf",
     "未命名 3.base",
     "演講/未命名",
     "未命名.base",
@@ -276,7 +251,6 @@
     "未命名 2.base",
     "未命名 1.base",
     "未命名.canvas",
-    "統計/進階統計",
     "圖片檔案/Pasted image 20251216171904.png",
     "圖片檔案/Pasted image 20251216171635.png",
     "圖片檔案/Pasted image 20251216171455.png",
@@ -285,8 +259,6 @@
     "圖片檔案/Pasted image 20251216170353.png",
     "圖片檔案/Pasted image 20251216170226.png",
     "圖片檔案/Pasted image 20251216165509.png",
-    "演講",
-    "問卷",
     "未命名 1.canvas",
     "未命名 2.canvas",
     "未命名 3.canvas"

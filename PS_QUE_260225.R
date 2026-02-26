@@ -10,7 +10,7 @@ for (pkg in required_packages) {
 # === 2. 設定路徑與讀取資料 ===
 base_dir <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\"
 input_file <- paste0(base_dir, "受試者進度紀錄與基本資料260117_clean.xlsx")
-output_file <- paste0(base_dir, "QUE分析_Full_260130.xlsx") # v6
+output_file <- paste0(base_dir, "QUE分析_Full_260130_V2.xlsx") 
 
 # 讀取資料
 message("讀取檔案: ", input_file)

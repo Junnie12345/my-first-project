@@ -27,12 +27,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "統計/核心筆記/Regression_on_Change_Scores.md",
+                "file": "統計/中介分析Mediation Analysis.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Regression_on_Change_Scores"
+              "title": "中介分析Mediation Analysis"
             }
           },
           {
@@ -137,7 +137,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "統計/核心筆記/Regression_on_Change_Scores.md",
+                "file": "統計/中介分析Mediation Analysis.md",
                 "collapseAll": true,
                 "extraContext": true,
                 "sortOrder": "alphabetical",
@@ -147,7 +147,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Regression_on_Change_Scores 的反向連結"
+              "title": "中介分析Mediation Analysis 的反向連結"
             }
           },
           {
@@ -212,7 +212,12 @@
   },
   "active": "267802e7a25f8dae",
   "lastOpenFiles": [
+    "Pasted image 20260225191531.png",
     "統計/2. Statistical_Models_Map.md",
+    "統計/中介分析Mediation Analysis.md",
+    "統計/1. 總導覽.md",
+    "統計/Lord's Paradox.md",
+    "統計/核心筆記/Regression_on_Change_Scores.md",
     "統計/核心筆記/GEE_Generalized_Estimating_Equations.md",
     "統計/核心筆記/GLM (Generalized Linear Model).md",
     "統計/核心筆記/GLMM_Generalized_Linear_Mixed_Model.md",
@@ -232,15 +237,10 @@
     "Mixed Effects Models and Extensions in Ecology with R.md",
     "Mixed Effects Models and Extensions in Ecology with R.pdf",
     "統計/參考資料/論文.md",
-    "統計/1. 總導覽.md",
     "統計/參考資料/book.md",
     "統計/資料庫.md",
     "統計/參考資料",
     "統計/進階統計/Random_Intercept.md",
-    "統計/進階統計/Fixed_Effect.md",
-    "統計/進階統計/AIC_Model_Selection.md",
-    "統計/分布/機率分布.md",
-    "統計/分布/Posisson distribution.md",
     "R04_Rplot_stu.pdf",
     "未命名 3.base",
     "演講/未命名",

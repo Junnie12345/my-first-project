@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "rmcorr Repeated Measures Correlation.md",
+                "file": "統計/核心筆記/Regression_on_Change_Scores.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "rmcorr Repeated Measures Correlation"
+              "title": "Regression_on_Change_Scores"
             }
           }
         ]
@@ -94,7 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "rmcorr Repeated Measures Correlation.md",
+                "file": "統計/核心筆記/Regression_on_Change_Scores.md",
                 "collapseAll": true,
                 "extraContext": true,
                 "sortOrder": "alphabetical",
@@ -104,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "rmcorr Repeated Measures Correlation 的反向連結"
+              "title": "Regression_on_Change_Scores 的反向連結"
             }
           },
           {
@@ -169,10 +169,10 @@
   },
   "active": "267802e7a25f8dae",
   "lastOpenFiles": [
-    "統計/1. 總導覽.md",
-    "統計/核心筆記/Traditional_ANCOVA.md",
     "統計/2. Statistical_Models_Map.md",
+    "統計/1. 總導覽.md",
     "rmcorr Repeated Measures Correlation.md",
+    "統計/核心筆記/Traditional_ANCOVA.md",
     "統計/核心筆記/Simple_Multiple_Regression.md",
     "統計/核心筆記/Poisson_Gamma_Regression.md",
     "Vickers_Altman_2001_BMJ.md",

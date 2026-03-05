@@ -25,7 +25,7 @@ message("✅ 套件載入完成")
 message(">>> [2/10] 設定路徑與參數...")
 base_dir <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\"
 input_file <- paste0(base_dir, "Sleepdiary260117_all_clean.xlsx")
-output_file <- paste0(base_dir, "Sleepdiary_stats_Full_Final_v11.xlsx")
+output_file <- paste0(base_dir, "Sleepdiary_stats_260302.xlsx")
 
 outcome_base_vars <- c(
   "TRT", "TST", "SE", "SL", "WASO", "wakefulness_day",
@@ -348,7 +348,7 @@ for (i in seq_along(vars_to_plot)) {
     geom_text(aes(label = label_placebo, y = avg + se), vjust = -0.5, size = 7, show.legend = F, na.rm = T) +
     geom_text(aes(label = label_PS150, y = avg + se), vjust = -0.5, size = 6, show.legend = F, na.rm = T) +
     geom_text(data = df_s %>% filter(!is.na(label_AB)), aes(label = label_AB, x = week_numeric, y = pmax), color = "black", vjust = 1, size = 6, show.legend = F, na.rm = T) +
-    labs(subtitle = "Mean ± SEM (*:placebo vs Pre, #:PS150 vs Pre, $:placebo vs PS150)")
+    labs(subtitle = "(*:placebo vs Pre, #:PS150 vs Pre, $:placebo vs PS150)")
 
   ggsave(file.path(diary_path_anno, paste0(m, "_Annotated.png")), p_anno, width = 8, height = 8, bg = "white")
   ggsave(file.path(diary_path_pure, paste0(m, "_Pure.png")), p, width = 8, height = 8, bg = "white")

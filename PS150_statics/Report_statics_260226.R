@@ -16,7 +16,7 @@ ID_list <- read.xlsx("C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_result
   sheet = "完整資料"
 )
 # 設定檔案匯出路徑與名稱
-output_file <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\report_stats_260131_clean.xlsx"
+output_file <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\report_stats_260305_clean.xlsx"
 output_path <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026"
 
 # 定義所有 PSG 生理指標
@@ -190,16 +190,93 @@ intergroup_wilcox_results_df <- long_measures %>%
 print(head(intergroup_wilcox_results_df))
 
 
-# ==================================
-# ==== 6. 改善幅度與 Excel 匯出 ====
-# ==================================
-improvement_summary <- long_measures %>%
-  filter(Trail %in% c("Pre", "Post")) %>%
-  group_by(Group, measure, Trail) %>%
-  summarise(avg = mean(score, na.rm = TRUE), .groups = "drop") %>%
-  pivot_wider(names_from = Trail, values_from = avg) %>%
-  mutate(diff = Post - Pre, improvement_pct = (diff / Pre) * 100)
+# ==============================================================================
+# ==== 6. 報表資料整併 (參照新版優化邏輯) ====
+# ==============================================================================
+message("\n--- 正在整併報表資料 ---")
 
+# 6.1 製作 Sheet 1: 基礎統計+常態檢定合併表
+desc_normality <- desc_stats %>%
+  left_join(
+    normality_results %>% select(Group, Trail, measure, Shapiro_p = p),
+    by = c("Group", "Trail", "measure")
+  ) %>%
+  mutate(
+    Is_Normal = ifelse(Shapiro_p > 0.05, "Yes", "No")
+  ) %>%
+  arrange(measure, Group, Trail)
+
+# 6.2 製作 Sheet 2: 正規結果總表 (Pre/Post 組內與組間合併)
+stats_paper <- desc_normality %>%
+  filter(Trail %in% c("Pre", "Post")) %>%
+  pivot_wider(
+    id_cols = measure,
+    names_from = c(Group, Trail),
+    values_from = c(mean, sem),
+    names_glue = "{Group}_{.value}_{Trail}"
+  ) %>%
+  select(
+    measure,
+    placebo_mean_Pre, placebo_sem_Pre, placebo_mean_Post, placebo_sem_Post,
+    PS150_mean_Pre, PS150_sem_Pre, PS150_mean_Post, PS150_sem_Post
+  )
+
+# 擷取組內 p 值 (Wilcoxon)
+p_within <- paired_w_results %>%
+  select(Group, measure, p) %>%
+  pivot_wider(names_from = Group, values_from = p, names_prefix = "p_Within_")
+
+# 擷取組間 p 值 (Mann-Whitney)
+p_between <- intergroup_wilcox_results_df %>%
+  select(Trail, measure, p) %>%
+  pivot_wider(names_from = Trail, values_from = p, names_prefix = "p_Between_")
+
+# 合併為總表
+sheet2_table <- stats_paper %>%
+  left_join(p_within, by = "measure") %>%
+  left_join(p_between, by = "measure")
+
+# 6.3 製作 Sheet 3: 差值比較表 (Delta)
+delta_data <- long_measures %>%
+  filter(Trail %in% c("Pre", "Post")) %>%
+  group_by(ID, measure) %>%
+  filter(n_distinct(Trail) == 2) %>% # 確保有配對
+  ungroup() %>%
+  select(ID, Group, Trail, measure, score) %>%
+  pivot_wider(names_from = Trail, values_from = score) %>%
+  mutate(Diff = Post - Pre) %>%
+  filter(!is.na(Diff))
+
+delta_stats <- delta_data %>%
+  group_by(measure, Group) %>%
+  summarise(
+    mean = mean(Diff, na.rm = TRUE),
+    sd = sd(Diff, na.rm = TRUE),
+    n = n(),
+    sem = sd / sqrt(n),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    id_cols = measure,
+    names_from = Group,
+    values_from = c(mean, sem),
+    names_glue = "diff_{.value}_{Group}"
+  ) %>%
+  rename_with(~ sub("diff_sem", "diff_SEM", .x), contains("diff_sem")) %>%
+  select(
+    measure,
+    any_of(c("diff_mean_placebo", "diff_SEM_placebo", "diff_mean_PS150", "diff_SEM_PS150"))
+  )
+
+delta_test <- delta_data %>%
+  group_by(measure) %>%
+  filter(n_distinct(Group) == 2) %>%
+  wilcox_test(Diff ~ Group) %>%
+  select(measure, p) %>%
+  mutate(method = "Mann-Whitney U")
+
+sheet3_table <- delta_stats %>%
+  left_join(delta_test, by = "measure")
 
 library(geepack)
 library(MuMIn)
@@ -517,87 +594,105 @@ df_adjusted <- bind_rows(results_adjusted)
 
 
 # 建立 Excel 活頁簿
-# ==================================
-# ==== 最終匯出重整：建立專業統計報表 (更新版) ====
-# ==================================
+# ==============================================================================
+# ==== 7. 建立專業統計報表 (格式化 Excel 匯出) ====
+# ==============================================================================
+message("正在產生格式化 Excel 報表...")
 
-# 1. 建立新的活頁簿
 wb <- createWorkbook()
 
-# --- 階段 A: 基礎描述與品質檢查 ---
-addWorksheet(wb, "0_描述統計(Mean_SD_SEM)")
-writeData(wb, "0_描述統計(Mean_SD_SEM)", desc_stats)
+# 定義條件格式 Style
+style_sig <- createStyle(bgFill = "#FFFF00") # 黃底：顯著
+style_warn <- createStyle(fontColour = "#FF0000", textDecoration = "bold") # 紅字粗體：非常態
 
-addWorksheet(wb, "1_常態性檢定(Shapiro)")
-writeData(wb, "1_常態性檢定(Shapiro)", normality_results)
+# --- 階段 A: 基礎與總表 (套用條件格式) ---
 
-# --- 階段 B: 傳統三時點組內分析 (Friedman/ANOVA) ---
-addWorksheet(wb, "2_三時點_無母數(Friedman)")
-writeData(wb, "2_三時點_無母數(Friedman)", friedman_results)
+# Sheet 1: 基礎描述與常態檢定
+addWorksheet(wb, "0_基礎描述與常態檢定")
+writeData(wb, "0_基礎描述與常態檢定", desc_normality)
+conditionalFormatting(wb, "0_基礎描述與常態檢定", cols = which(names(desc_normality) == "Shapiro_p"), rows = 2:5000, rule = "<0.05", style = style_warn)
 
-addWorksheet(wb, "3_三時點_有母數(ANOVA)")
-writeData(wb, "3_三時點_有母數(ANOVA)", oneway_rm_anova_results)
-
-addWorksheet(wb, "4_三時點_事後比較")
-writeData(wb, "4_三時點_事後比較", posthoc_wilcox)
-
-# --- 階段 C: 前後測與組間比較 ---
-addWorksheet(wb, "5a_組內_前後測比較(Wilcox)")
-writeData(wb, "5a_組內_前後測比較(Wilcox)", paired_w_results)
-
-# 【新增】組間比較結果
-addWorksheet(wb, "5b_組間_各時點比較(MannWhit)")
-writeData(wb, "5b_組間_各時點比較(MannWhit)", intergroup_wilcox_results_df)
-
-addWorksheet(wb, "6_前後測_改善幅度(%)")
-writeData(wb, "6_前後測_改善幅度(%)", improvement_summary)
-
-# --- 階段 D: GEE ---
-addWorksheet(wb, "7a_GEE_Best_Unadj")
-writeData(wb, "7a_GEE_Best_Unadj", df_gee_best_unadj)
-
-addWorksheet(wb, "8a_GEE_Best_Adj")
-writeData(wb, "8a_GEE_Best_Adj", df_gee_best_adj)
-
-addWorksheet(wb, "8a_GEE_Best_PostHoc")
-writeData(wb, "8a_GEE_Best_PostHoc", df_gee_best_ph)
-
-addWorksheet(wb, "7b_GEE_AR1_Unadj")
-writeData(wb, "7b_GEE_AR1_Unadj", df_gee_spec_unadj)
-
-addWorksheet(wb, "8b_GEE_AR1_Adj")
-writeData(wb, "8b_GEE_AR1_Adj", df_gee_spec_adj)
-
-addWorksheet(wb, "8b_GEE_AR1_PostHoc")
-writeData(wb, "8b_GEE_AR1_PostHoc", df_gee_spec_ph)
-
-# --- 階段 E: LMM ---
-addWorksheet(wb, "9_LMM_原始模型")
-writeData(wb, "9_LMM_原始模型", df_unadjusted)
-
-addWorksheet(wb, "10_LMM_調整模型")
-writeData(wb, "10_LMM_調整模型", df_adjusted)
-
-# --- 階段 F: VIF ---
-addWorksheet(wb, "11_共線性檢查(VIF)")
-if (!is.null(vif_report)) {
-  writeData(wb, "11_共線性檢查(VIF)", vif_report, rowNames = TRUE)
+# Sheet 2: 正規結果總表
+addWorksheet(wb, "1_正規結果總表")
+writeData(wb, "1_正規結果總表", sheet2_table)
+# 小數點格式化
+addStyle(wb, "1_正規結果總表", createStyle(numFmt = "0.00"), rows = 2:5000, cols = 2:9, gridExpand = TRUE)
+addStyle(wb, "1_正規結果總表", createStyle(numFmt = "0.000"), rows = 2:5000, cols = 10:13, gridExpand = TRUE)
+# 標記顯著 P 值
+p_cols_s2 <- which(grepl("p_", names(sheet2_table)))
+if (length(p_cols_s2) > 0) {
+  conditionalFormatting(wb, "1_正規結果總表", cols = p_cols_s2, rows = 2:5000, rule = "<0.05", style = style_sig)
 }
 
-# 2. 儲存檔案
+# Sheet 3: 差值比較表
+addWorksheet(wb, "2_差值比較表")
+writeData(wb, "2_差值比較表", sheet3_table)
+addStyle(wb, "2_差值比較表", createStyle(numFmt = "0.00"), rows = 2:5000, cols = 2:5, gridExpand = TRUE)
+addStyle(wb, "2_差值比較表", createStyle(numFmt = "0.000"), rows = 2:5000, cols = 6, gridExpand = TRUE)
+conditionalFormatting(wb, "2_差值比較表", cols = 6, rows = 2:5000, rule = "<0.05", style = style_sig)
+
+
+# --- 階段 B: 傳統三時點組內分析 (Friedman/ANOVA) ---
+addWorksheet(wb, "3_三時點_無母數(Friedman)")
+writeData(wb, "3_三時點_無母數(Friedman)", friedman_results)
+
+addWorksheet(wb, "4_三時點_有母數(ANOVA)")
+writeData(wb, "4_三時點_有母數(ANOVA)", oneway_rm_anova_results)
+
+addWorksheet(wb, "5_三時點_事後比較(Wilcox)")
+writeData(wb, "5_三時點_事後比較(Wilcox)", posthoc_wilcox)
+
+
+# --- 階段 C: GEE (原樣保留) ---
+addWorksheet(wb, "6a_GEE_Best_Unadj")
+writeData(wb, "6a_GEE_Best_Unadj", df_gee_best_unadj)
+
+addWorksheet(wb, "7a_GEE_Best_Adj")
+writeData(wb, "7a_GEE_Best_Adj", df_gee_best_adj)
+
+addWorksheet(wb, "7a_GEE_Best_PostHoc")
+writeData(wb, "7a_GEE_Best_PostHoc", df_gee_best_ph)
+
+addWorksheet(wb, "6b_GEE_AR1_Unadj")
+writeData(wb, "6b_GEE_AR1_Unadj", df_gee_spec_unadj)
+
+addWorksheet(wb, "7b_GEE_AR1_Adj")
+writeData(wb, "7b_GEE_AR1_Adj", df_gee_spec_adj)
+
+addWorksheet(wb, "7b_GEE_AR1_PostHoc")
+writeData(wb, "7b_GEE_AR1_PostHoc", df_gee_spec_ph)
+
+
+# --- 階段 D: LMM (原樣保留) ---
+addWorksheet(wb, "8_LMM_原始模型")
+writeData(wb, "8_LMM_原始模型", df_unadjusted)
+
+addWorksheet(wb, "9_LMM_調整模型")
+writeData(wb, "9_LMM_調整模型", df_adjusted)
+
+addWorksheet(wb, "10_共線性檢查(VIF)")
+if (!is.null(vif_report)) {
+  writeData(wb, "10_共線性檢查(VIF)", vif_report, rowNames = TRUE)
+}
+
+# 儲存檔案
 saveWorkbook(wb, output_file, overwrite = TRUE)
 
-cat("\n統計分析報告已更新。\n儲存路徑：", output_file, "\n")
+cat("\n🎉 統計分析報告已更新並格式化完成！\n📂 儲存路徑：", output_file, "\n")
+
 
 
 #--畫圖-----
 # ==============================================================================
-# ==== 繪圖總控制區 ====
+# ==== 繪圖總控制區 (使用統一引擎 + 終極防撞 Bracket 版) ======
 # ==============================================================================
 library(ggplot2)
 library(tidyverse)
 library(scales)
 library(ggpubr)
+# ⚠️ 新增：畫組間橫線 (Bracket) 必備的套件
+if (!require(ggsignif)) install.packages("ggsignif")
+library(ggsignif)
 
 message("\n=== 開始繪圖流程 ===")
 
@@ -613,14 +708,24 @@ plot_base_path <- file.path(output_path, paste0("Plots_Output_", folder_date))
 path_pure <- file.path(plot_base_path, "Report_pure")
 path_annotated <- file.path(plot_base_path, "Report_annotated")
 path_3point <- file.path(plot_base_path, "Report_3point_annotated")
+path_diff_bar <- file.path(plot_base_path, "Report_Delta_Bar") 
 
-for (p in c(path_pure, path_annotated, path_3point)) {
+for (p in c(path_pure, path_annotated, path_3point, path_diff_bar)) {
   if (!dir.exists(p)) dir.create(p, recursive = TRUE)
 }
 
-# 3. 顏色設定
+# 3. 載入統一繪圖工具包
+source("C:\\github\\my-first-project\\my-first-project\\PS150_statics\\functioin\\Line_plot_tool.R")
+source("C:\\github\\my-first-project\\my-first-project\\PS150_statics\\functioin\\Bar_plot_tool.R")
+
+# 顏色與形狀
 my_colors <- c("placebo" = "#31688E", "PS150" = "#E67E22")
 my_shapes <- c("placebo" = 16, "PS150" = 17)
+Group_A <- "placebo"
+Group_B <- "PS150"
+
+# 【關鍵設定】：統一設定折線圖的 Error Bar 閃避寬度，0.35 足以讓兩組徹底分開
+my_dodge_w <- 0.35 
 
 # 4. 準備繪圖數據
 plot_data_full <- long_measures %>%
@@ -643,180 +748,207 @@ plot_data_full <- long_measures %>%
     n = n(),
     se = sd / sqrt(n),
     .groups = "drop"
-  )
+  ) %>%
+  mutate(Group = factor(Group, levels = c("placebo", "PS150")))
 
 # ==============================================================================
-# ==== PART 1: 兩點趨勢圖 (Pre-Post) - 修正版 ====
+# ==== PART 1: 兩點趨勢圖 (Pre-Post) ====
 # ==============================================================================
-message("--- 繪製兩點圖 (Annotated 包含組間 $) ---")
+message("--- 繪製兩點圖 (Annotated 包含組間 Bracket) ---")
 
 plot_data_2pt <- plot_data_full %>%
   filter(Trail %in% c("Pre", "Post")) %>%
-  mutate(Trail = factor(Trail, levels = c("Pre", "Post")))
+  mutate(week_numeric = ifelse(Trail == "Pre", 1, 2))
 
 for (m in unique(plot_data_2pt$measure)) {
   df_sum <- plot_data_2pt %>% filter(measure == m)
   if (nrow(df_sum) == 0) next
-
-  # --- A. 填入顯著性標籤 ---
-  df_sum$label_placebo <- NA
-  df_sum$label_PS150 <- NA
+  
+  df_sum$label_time <- NA
   df_sum$label_AB <- NA
-
-  # 1. 組內比較 (Pre vs Post)
+  
+  # 組內比較
   if (exists("paired_w_results")) {
     res_placebo <- paired_w_results %>% filter(measure == m, Group == "placebo")
-    if (nrow(res_placebo) > 0 && !is.na(res_placebo$p) && res_placebo$p < 0.05) df_sum$label_placebo[df_sum$Group == "placebo" & df_sum$Trail == "Post"] <- "*"
-
+    if (nrow(res_placebo) > 0 && !is.na(res_placebo$p) && res_placebo$p < 0.05) {
+      df_sum$label_time[df_sum$Group == "placebo" & df_sum$Trail == "Post"] <- "*"
+    }
     res_PS150 <- paired_w_results %>% filter(measure == m, Group == "PS150")
-    if (nrow(res_PS150) > 0 && !is.na(res_PS150$p) && res_PS150$p < 0.05) df_sum$label_PS150[df_sum$Group == "PS150" & df_sum$Trail == "Post"] <- "#"
+    if (nrow(res_PS150) > 0 && !is.na(res_PS150$p) && res_PS150$p < 0.05) {
+      df_sum$label_time[df_sum$Group == "PS150" & df_sum$Trail == "Post"] <- "#"
+    }
   }
-
-  # 2. 組間比較 (placebo vs PS150) - 【關鍵修正】
+  
+  # 組間比較 -> 標記在 Group_A 防止 Bracket 重複繪製
   if (exists("intergroup_wilcox_results_df")) {
-    # 檢查 Pre
     res_pre <- intergroup_wilcox_results_df %>% filter(measure == m, Trail == "Pre")
-    if (nrow(res_pre) > 0 && !is.na(res_pre$p) && res_pre$p < 0.05) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Pre"] <- "$"
-
-    # 檢查 Post
+    if (nrow(res_pre) > 0 && !is.na(res_pre$p) && res_pre$p < 0.05) {
+      df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Pre"] <- "$"
+    }
     res_post <- intergroup_wilcox_results_df %>% filter(measure == m, Trail == "Post")
-    if (nrow(res_post) > 0 && !is.na(res_post$p) && res_post$p < 0.05) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Post"] <- "$"
+    if (nrow(res_post) > 0 && !is.na(res_post$p) && res_post$p < 0.05) {
+      df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Post"] <- "$"
+    }
   }
-
-  # --- B. 繪圖設定 ---
-  raw_min <- min(df_sum$avg - df_sum$se, na.rm = T)
-  raw_max <- max(df_sum$avg + df_sum$se, na.rm = T)
-  if (raw_min == raw_max) {
-    raw_min <- raw_min - 0.1
-    raw_max <- raw_max + 0.1
-  }
-  plot_max <- raw_max + (raw_max - raw_min) * 0.2
-  breaks_seq <- pretty(c(raw_min, plot_max), n = 5)
-  if (length(breaks_seq) > 6) breaks_seq <- pretty(c(raw_min, plot_max), n = 4)
-
-  p_base <- ggplot(df_sum, aes(x = Trail, y = avg, group = Group, color = Group, shape = Group)) +
-    geom_line(linewidth = 1.2, alpha = 0.9) +
-    geom_point(size = 4.5) +
-    geom_errorbar(aes(ymin = avg - se, ymax = avg + se), width = 0.08, linewidth = 0.8) +
-    scale_x_discrete(expand = expansion(mult = c(0.35, 0.35))) +
-    scale_y_continuous(breaks = breaks_seq, limits = range(breaks_seq), expand = expansion(mult = c(0.05, 0.30))) +
-    scale_color_manual(values = my_colors, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
-    scale_shape_manual(values = my_shapes, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
-    labs(title = m, subtitle = "Mean ± SEM", x = NULL, y = "Score") +
-    theme_classic() +
-    theme(
-      plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
-      plot.subtitle = element_text(size = 12, color = "gray30"),
-      axis.title.y = element_text(size = 18, face = "bold", margin = margin(r = 10)),
-      axis.text = element_text(size = 16, color = "black", face = "bold"),
-      legend.position = c(0.95, 0.98),
-      legend.justification = c("right", "top"),
-      legend.background = element_rect(fill = "white", color = "black", linewidth = 0.2),
-      legend.title = element_blank(),
-      legend.text = element_text(size = 14)
+  
+  scale_info <- calc_dynamic_y_scale(df_sum, error_ratio = 0.15)
+  
+  suppressMessages(suppressWarnings({
+    p_base <- create_flexible_line_plot(
+      df_s = df_sum, y_breaks = scale_info$breaks, y_limits = scale_info$limits,
+      title_text = m, y_label = "Score", x_label = "Time",
+      color_pal = my_colors, shape_pal = my_shapes, 
+      dodge_w = my_dodge_w 
+    ) + 
+      scale_x_continuous(breaks = c(1, 2), labels = c("Pre", "Post"), expand = expansion(mult = 0.35))
+    
+    p_anno <- add_annotations_flexible(
+      p = p_base, df_s = df_sum, scale_info = scale_info, 
+      dodge_w = my_dodge_w, 
+      # 【修正這裡】：拆成 size_star 和 size_pound
+      size_star = 8, 
+      size_pound = 6, 
+      size_dollar = 6, 
+      y_gap_rows = 0.05
     )
-
-  # 輸出 Annotated
-  p_anno <- p_base +
-    geom_text(aes(label = label_placebo, y = avg + se), vjust = -1, size = 8, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
-    geom_text(aes(label = label_PS150, y = avg + se), vjust = -1, size = 7, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
-    # 組間標記 $
-    geom_text(data = df_sum %>% filter(!is.na(label_AB)), aes(label = label_AB, x = Trail, y = plot_max), color = "black", vjust = 1, size = 6, show.legend = FALSE, na.rm = TRUE) +
-    labs(subtitle = "Mean ± SEM (*:placebo intra, #:PS150 intra, $:placebo vs PS150)")
-
+  }))
+  
   safe_name <- gsub("%", "pct", m)
   ggsave(file.path(path_annotated, paste0(safe_name, "_Trend_Annotated.png")), p_anno, width = 4, height = 5, dpi = 300, bg = "white")
   ggsave(file.path(path_pure, paste0(safe_name, "_Trend_Pure.png")), p_base, width = 4, height = 5, dpi = 300, bg = "white")
 }
 
+
 # ==============================================================================
-# ==== PART 2: 三點趨勢圖 (GEE Annotated) - 維持原樣 ====
+# ==== PART 2: 三點趨勢圖 (GEE Annotated) ====
 # ==============================================================================
-message("\n--- 繪製三點圖 (GEE Annotated) ---")
-# (此段程式碼邏輯未變，使用 GEE 結果，直接執行即可)
+message("\n--- 繪製三點圖 (GEE Annotated 包含組間 Bracket) ---")
 
 plot_data_3pt <- plot_data_full %>%
-  mutate(Trail = factor(Trail, levels = c("Interview", "Pre", "Post")))
+  mutate(
+    week_numeric = case_when(
+      Trail == "Interview" ~ 1,
+      Trail == "Pre" ~ 2,
+      Trail == "Post" ~ 3
+    )
+  )
 
 check_gee_intra <- function(msr, grp, tm) {
-  if (!exists("df_gee_best_ph")) {
-    return(FALSE)
-  }
+  if (!exists("df_gee_best_ph")) return(FALSE)
   res <- df_gee_best_ph %>%
     filter(measure == msr, Comparison == "Time_Diff", Group == grp) %>%
     filter(grepl("Interview", contrast) & grepl(tm, contrast))
-  if (nrow(res) > 0 && !is.na(res$p.value) && res$p.value < 0.05) {
-    return(TRUE)
-  }
+  if (nrow(res) > 0 && !is.na(res$p.value) && res$p.value < 0.05) return(TRUE)
   return(FALSE)
 }
 
 check_gee_inter <- function(msr, tm) {
-  if (!exists("df_gee_best_ph")) {
-    return(FALSE)
-  }
-  res <- df_gee_best_ph %>%
-    filter(measure == msr, Comparison == "Group_Diff", Trail == tm)
-  if (nrow(res) > 0 && !is.na(res$p.value) && res$p.value < 0.05) {
-    return(TRUE)
-  }
+  if (!exists("df_gee_best_ph")) return(FALSE)
+  res <- df_gee_best_ph %>% filter(measure == msr, Comparison == "Group_Diff", Trail == tm)
+  if (nrow(res) > 0 && !is.na(res$p.value) && res$p.value < 0.05) return(TRUE)
   return(FALSE)
 }
 
 for (m in unique(plot_data_3pt$measure)) {
   df_sum <- plot_data_3pt %>% filter(measure == m)
   if (nrow(df_sum) == 0) next
-
-  df_sum$label_placebo <- NA
-  df_sum$label_PS150 <- NA
+  
+  df_sum$label_time <- NA
   df_sum$label_AB <- NA
-
-  if (check_gee_intra(m, "placebo", "Pre")) df_sum$label_placebo[df_sum$Group == "placebo" & df_sum$Trail == "Pre"] <- "*"
-  if (check_gee_intra(m, "placebo", "Post")) df_sum$label_placebo[df_sum$Group == "placebo" & df_sum$Trail == "Post"] <- "*"
-  if (check_gee_intra(m, "PS150", "Pre")) df_sum$label_PS150[df_sum$Group == "PS150" & df_sum$Trail == "Pre"] <- "#"
-  if (check_gee_intra(m, "PS150", "Post")) df_sum$label_PS150[df_sum$Group == "PS150" & df_sum$Trail == "Post"] <- "#"
-
+  
+  if (check_gee_intra(m, "placebo", "Pre")) df_sum$label_time[df_sum$Group == "placebo" & df_sum$Trail == "Pre"] <- "*"
+  if (check_gee_intra(m, "placebo", "Post")) df_sum$label_time[df_sum$Group == "placebo" & df_sum$Trail == "Post"] <- "*"
+  if (check_gee_intra(m, "PS150", "Pre")) df_sum$label_time[df_sum$Group == "PS150" & df_sum$Trail == "Pre"] <- "#"
+  if (check_gee_intra(m, "PS150", "Post")) df_sum$label_time[df_sum$Group == "PS150" & df_sum$Trail == "Post"] <- "#"
+  
   if (check_gee_inter(m, "Interview")) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Interview"] <- "$"
   if (check_gee_inter(m, "Pre")) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Pre"] <- "$"
   if (check_gee_inter(m, "Post")) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$Trail == "Post"] <- "$"
-
-  raw_min <- min(df_sum$avg - df_sum$se, na.rm = T)
-  raw_max <- max(df_sum$avg + df_sum$se, na.rm = T)
-  if (raw_min == raw_max) {
-    raw_min <- raw_min - 0.1
-    raw_max <- raw_max + 0.1
-  }
-  plot_max <- raw_max + (raw_max - raw_min) * 0.15
-  breaks_seq <- pretty(c(raw_min, plot_max), n = 5)
-  if (length(breaks_seq) > 6) breaks_seq <- pretty(c(raw_min, plot_max), n = 4)
-
-  p_3pt <- ggplot(df_sum, aes(x = Trail, y = avg, group = Group, color = Group, shape = Group)) +
-    geom_line(linewidth = 1.2, alpha = 0.9) +
-    geom_point(size = 4.5) +
-    geom_errorbar(aes(ymin = avg - se, ymax = avg + se), width = 0.08, linewidth = 0.8) +
-    scale_x_discrete(expand = expansion(mult = c(0.1, 0.1))) +
-    scale_y_continuous(breaks = breaks_seq, limits = range(breaks_seq), expand = expansion(mult = c(0.05, 0.30))) +
-    scale_color_manual(values = my_colors, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
-    scale_shape_manual(values = my_shapes, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
-    labs(title = m, subtitle = "Mean ± SEM (*:vs Int, #:vs Int, $:placebo vs PS150)", x = NULL, y = "Score") +
-    theme_classic() +
-    theme(
-      plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
-      plot.subtitle = element_text(size = 12, color = "gray30"),
-      axis.title.y = element_text(size = 18, face = "bold", margin = margin(r = 10)),
-      axis.text = element_text(size = 16, color = "black", face = "bold"),
-      legend.position = c(0.95, 0.98),
-      legend.justification = c("right", "top"),
-      legend.background = element_rect(fill = "white", color = "black", linewidth = 0.2),
-      legend.title = element_blank(),
-      legend.text = element_text(size = 14)
-    ) +
-    geom_text(aes(label = label_placebo, y = avg + se), vjust = -1, size = 8, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
-    geom_text(aes(label = label_PS150, y = avg + se), vjust = -1, size = 7, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
-    geom_text(data = df_sum %>% filter(!is.na(label_AB)), aes(label = label_AB, x = Trail, y = plot_max), color = "black", vjust = 1, size = 6, show.legend = FALSE, na.rm = TRUE)
-
+  
+  scale_info <- calc_dynamic_y_scale(df_sum, error_ratio = 0.15)
+  
+  suppressMessages(suppressWarnings({
+    p_3pt <- create_flexible_line_plot(
+      df_s = df_sum, y_breaks = scale_info$breaks, y_limits = scale_info$limits,
+      title_text = m, y_label = "Score", x_label = "Time",
+      color_pal = my_colors, shape_pal = my_shapes, 
+      dodge_w = my_dodge_w
+    ) + 
+      scale_x_continuous(breaks = c(1, 2, 3), labels = c("Interview", "Pre", "Post"), expand = expansion(mult = 0.15))
+    
+    p_3pt_anno <- add_annotations_flexible(
+      p = p_3pt, df_s = df_sum, scale_info = scale_info, 
+      dodge_w = my_dodge_w, 
+      # 【修正這裡】：拆成 size_star 和 size_pound
+      size_star = 8, 
+      size_pound = 6, 
+      size_dollar = 6, 
+      y_gap_rows = 0.05
+    )
+  }))
+  
   safe_name <- gsub("%", "pct", m)
-  ggsave(file.path(path_3point, paste0(safe_name, "_Trend_3pt.png")), p_3pt, width = 5, height = 5, dpi = 300, bg = "white")
+  ggsave(file.path(path_3point, paste0(safe_name, "_Trend_3pt.png")), p_3pt_anno, width = 5, height = 5, dpi = 300, bg = "white")
 }
 
-cat("\n所有圖表與報表更新完成！\n")
+# ==============================================================================
+# ==== PART 3: 差值圖 (Delta Bar Plot) ====
+# ==============================================================================
+message("\n--- 計算並繪製差值圖 (Bar Plot Tool) ---")
+
+delta_individual <- long_measures %>%
+  filter(Trail %in% c("Pre", "Post")) %>%
+  select(ID, Group, measure, Trail, score) %>%
+  pivot_wider(names_from = Trail, values_from = score) %>%
+  mutate(Diff = Post - Pre) %>%
+  filter(!is.na(Diff))
+
+delta_summary <- delta_individual %>%
+  group_by(Group, measure) %>%
+  summarise(
+    avg = mean(Diff, na.rm = TRUE),
+    sd = sd(Diff, na.rm = TRUE),
+    n = n(),
+    se = sd / sqrt(n),
+    .groups = "drop"
+  ) %>%
+  mutate(Group = factor(Group, levels = c("placebo", "PS150")))
+
+for (m in unique(delta_summary$measure)) {
+  df_bar <- delta_summary %>%
+    filter(measure == m) %>%
+    mutate(Stage = "Delta") 
+  
+  if (nrow(df_bar) == 0) next
+  
+  sub_delta <- delta_individual %>% filter(measure == m)
+  p_val <- NA
+  if (nrow(sub_delta) >= 2 && n_distinct(sub_delta$Group) == 2) {
+    p_val <- tryCatch(wilcox.test(Diff ~ Group, data = sub_delta)$p.value, error = function(e) NA)
+  }
+  
+  df_bar <- df_bar %>% mutate(label_Bet = ifelse(!is.na(p_val) && p_val < 0.05, "*", NA))
+  
+  scale_info_bar <- calc_dynamic_y_scale_bar(df_bar, y_col = "avg", err_col = "se")
+  
+  suppressWarnings({
+    p_base_bar <- create_flexible_bar_plot(
+      df = df_bar, x_col = "Stage", y_col = "avg", err_col = "se", group_col = "Group",
+      scale_info = scale_info_bar, title_text = paste(m, "- Change"), 
+      y_label = "Difference Score", x_label = NULL, color_pal = my_colors,
+      plot_ratio = 1.25 
+    ) + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+    
+    p_anno_bar <- add_annotations_bar(
+      p = p_base_bar, df = df_bar, x_col = "Stage", y_col = "avg", err_col = "se", group_col = "Group",
+      scale_info = scale_info_bar, groupA_name = Group_A, groupB_name = Group_B,
+      dodge_w = 0.8,
+      size_dollar = 8, y_gap_rows = 0.08
+    )
+  })
+  
+  safe_name <- gsub("%", "pct", m)
+  ggsave(filename = file.path(path_diff_bar, paste0(safe_name, "_Diff_Bar_Anno.png")), plot = p_anno_bar, width = 5, height = 6, dpi = 300, bg = "white")
+}
+
+cat("\n🎉 所有圖表與報表更新完成！已全面套用標準化繪圖工具！\n")

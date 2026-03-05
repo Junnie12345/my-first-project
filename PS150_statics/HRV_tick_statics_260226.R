@@ -13,7 +13,7 @@ library(emmeans)
 # ⚠️ 請確認您的檔案路徑
 data_path <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\HRV_result_0128.xlsx"
 output_folder <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026"
-output_file <- file.path(output_folder, "HRV_ticks_Stats_260203.xlsx")
+output_file <- file.path(output_folder, "HRV_ticks_Stats_260303.xlsx")
 
 if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
@@ -389,138 +389,116 @@ if (nrow(df_gee_posthoc) > 0) {
 
 saveWorkbook(wb, output_file, overwrite = TRUE)
 
+
 # ==================================
-# ==== 7. 繪圖 (使用無母數 P 值標記) ====
+# ==== 7. 繪圖 (使用動態 Bar Plot Tool) ====
 # ==================================
 message("Step 6: 開始繪圖...")
 
+# 載入我們強大的柱狀圖工具包
+source("C:\\github\\my-first-project\\my-first-project\\PS150_statics\\functioin\\Bar_plot_tool.R")
+
 date_str <- format(Sys.Date(), "%y%m%d")
-base_plot_dir <- file.path(output_folder, paste0("HRV(ticks)_Plots_", date_str))
+base_plot_dir <- file.path(output_folder, paste0("HRV_Plots_", date_str))
 
 dir_pure <- list(pre = file.path(base_plot_dir, "Pre_pure"), post = file.path(base_plot_dir, "Post_pure"), delta = file.path(base_plot_dir, "Delta_pure"))
 dir_anno <- list(pre = file.path(base_plot_dir, "Pre_annotated"), post = file.path(base_plot_dir, "Post_annotated"), delta = file.path(base_plot_dir, "Delta_annotated"))
 lapply(c(dir_pure, dir_anno), function(x) if (!dir.exists(x)) dir.create(x, recursive = TRUE))
 
-# P 值地圖 (無母數)
 p_map <- final_nonpara %>%
   select(Metric, Stage, p_Within_A, p_Within_B, p_Bet_Pre, p_Bet_Post, p_Bet_Delta) %>%
   mutate(across(starts_with("p_"), ~ replace_na(., 1)))
 
 get_hrv_unit <- function(metric_name) {
-  if (metric_name %in% c("TP", "VLF", "LF", "HF", "Var")) {
-    return("(ms\u00B2)")
-  }
-  if (metric_name %in% c("LF/HF")) {
-    return("(Ratio)")
-  }
-  if (metric_name %in% c("SDNN", "RRI")) {
-    return("(ms)")
-  }
-  if (metric_name %in% c("HR")) {
-    return("(bpm)")
-  }
-  if (grepl("%", metric_name)) {
-    return("(%)")
-  }
-  if (metric_name == "n") {
-    return("(count)")
-  }
+  if (metric_name %in% c("TP", "VLF", "LF", "HF", "Var")) return("(ms\u00B2)")
+  if (metric_name %in% c("LF/HF")) return("(Ratio)")
+  if (metric_name %in% c("SDNN", "RRI")) return("(ms)")
+  if (metric_name %in% c("HR")) return("(bpm)")
+  if (grepl("%", metric_name)) return("(%)")
+  if (metric_name == "n") return("(count)")
   return("")
-}
-get_h <- function(m, s) {
-  ifelse((m + s) > 0, m + s, 0)
 }
 
 my_fill <- c("placebo" = "#31688E", "PS150" = "#E67E22")
+group_names <- levels(clean_data$Group)
+Group_A <- group_names[1] 
+Group_B <- group_names[2]
+
+# 【已將副標題變數安全移除】
 
 for (metric in unique(clean_data$Metric)) {
-  safe_name <- gsub("%", "pct", metric)
-  safe_name <- gsub("/", "div", safe_name)
-  safe_name <- gsub("[^A-Za-z0-9_]", "", safe_name)
+  safe_name <- gsub("%", "pct", metric); safe_name <- gsub("/", "div", safe_name); safe_name <- gsub("[^A-Za-z0-9_]", "", safe_name)
   unit_lab <- get_hrv_unit(metric)
-
+  
   # --- 1. Delta Plot ---
   dat_d <- desc_delta %>% filter(Metric == metric)
   if (nrow(dat_d) > 0) {
-    p <- ggplot(dat_d, aes(x = Stage, y = Delta_Mean, fill = Group)) +
-      geom_bar(stat = "identity", position = position_dodge(0.8), width = 0.7, color = "black") +
-      geom_errorbar(aes(ymin = Delta_Mean - Delta_SEM, ymax = Delta_Mean + Delta_SEM), position = position_dodge(0.8), width = 0.25) +
-      geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
-      scale_fill_manual(values = my_fill) +
-      labs(title = paste0(metric, " - Difference"), y = unit_lab, x = "Time") +
-      theme_classic() +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top", aspect.ratio = 0.5) +
-      scale_y_continuous(expand = expansion(mult = c(0.1, 0.2)))
-    ggsave(file.path(dir_pure$delta, paste0("Delta_", safe_name, ".png")), p, width = 8, height = 5)
-
-    # Annotated
-    dat_p <- dat_d %>% left_join(p_map, by = c("Metric", "Stage"))
-    gm <- max(get_h(dat_d$Delta_Mean, dat_d$Delta_SEM))
-    bf <- max(gm * 0.1, 0.1)
-
-    anno_placebo <- dat_p %>%
-      filter(Group == "placebo", p_Within_A < 0.05) %>%
-      mutate(x = as.numeric(Stage) - 0.2, y = get_h(Delta_Mean, Delta_SEM) + bf, label = "*")
-    anno_PS150 <- dat_p %>%
-      filter(Group == "PS150", p_Within_B < 0.05) %>%
-      mutate(x = as.numeric(Stage) + 0.2, y = get_h(Delta_Mean, Delta_SEM) + bf, label = "#")
-    anno_Bet <- dat_p %>%
-      filter(p_Bet_Delta < 0.05) %>%
-      group_by(Stage) %>%
-      summarise(top = max(get_h(Delta_Mean, Delta_SEM)), label = "$", .groups = "drop") %>%
-      mutate(x = as.numeric(Stage), y = top + (bf * 2.5))
-
-    if (nrow(anno_placebo) > 0) p <- p + geom_text(data = anno_placebo, aes(x = x, y = y, label = label), inherit.aes = F, size = 6, fontface = "bold")
-    if (nrow(anno_PS150) > 0) p <- p + geom_text(data = anno_PS150, aes(x = x, y = y, label = label), inherit.aes = F, size = 5, fontface = "bold")
-    if (nrow(anno_Bet) > 0) p <- p + geom_text(data = anno_Bet, aes(x = x, y = y, label = label), inherit.aes = F, size = 6, fontface = "bold")
-    ggsave(file.path(dir_anno$delta, paste0("Delta_", safe_name, ".png")), p, width = 8, height = 5)
+    dat_p <- dat_d %>% left_join(p_map, by = c("Metric", "Stage")) %>%
+      mutate(
+        label_A = ifelse(Group == Group_A & p_Within_A < 0.05, "*", NA),
+        label_B = ifelse(Group == Group_B & p_Within_B < 0.05, "#", NA),
+        label_Bet = ifelse(p_Bet_Delta < 0.05, "$", NA)
+      )
+    
+    scale_info <- calc_dynamic_y_scale_bar(dat_p, "Delta_Mean", "Delta_SEM")
+    
+    p_base <- create_flexible_bar_plot(
+      df = dat_p, x_col = "Stage", y_col = "Delta_Mean", err_col = "Delta_SEM", group_col = "Group",
+      scale_info = scale_info, title_text = paste0(metric, " - Difference"), y_label = unit_lab, color_pal = my_fill
+    )
+    # 【關鍵修正】：直接不傳入 anno_subtitle，函數預設就會使用 NULL，不畫副標題！
+    p_anno <- add_annotations_bar(
+      p = p_base, df = dat_p, x_col = "Stage", y_col = "Delta_Mean", err_col = "Delta_SEM", group_col = "Group",
+      scale_info = scale_info, groupA_name = Group_A, groupB_name = Group_B
+    )
+    
+    ggsave(file.path(dir_pure$delta, paste0("Delta_", safe_name, ".png")), p_base, width = 8, height = 5, bg="white")
+    ggsave(file.path(dir_anno$delta, paste0("Delta_", safe_name, ".png")), p_anno, width = 8, height = 5, bg="white")
   }
-
+  
   # --- 2. Pre Plot ---
-  dat_p <- desc_stats %>% filter(Metric == metric, Trail == "Pre")
-  if (nrow(dat_p) > 0) {
-    p <- ggplot(dat_p, aes(x = Stage, y = Mean, fill = Group)) +
-      geom_bar(stat = "identity", position = position_dodge(0.8), width = 0.7, color = "black") +
-      geom_errorbar(aes(ymin = Mean - SEM, ymax = Mean + SEM), position = position_dodge(0.8), width = 0.25) +
-      scale_fill_manual(values = my_fill) +
-      labs(title = paste0(metric, " - Pre Test"), y = unit_lab, x = "Time") +
-      theme_classic() +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top", aspect.ratio = 0.5) +
-      scale_y_continuous(expand = expansion(mult = c(0.05, 0.2)))
-    ggsave(file.path(dir_pure$pre, paste0("Pre_", safe_name, ".png")), p, width = 8, height = 5)
-
-    # Annotated ($)
-    anno <- dat_p %>%
-      left_join(p_map, by = c("Metric", "Stage")) %>%
-      filter(p_Bet_Pre < 0.05) %>%
-      group_by(Stage) %>%
-      summarise(y = max(Mean + SEM) * 1.1, label = "$", .groups = "drop")
-    if (nrow(anno) > 0) p <- p + geom_text(data = anno, aes(x = Stage, y = y, label = label), inherit.aes = F, size = 6, fontface = "bold")
-    ggsave(file.path(dir_anno$pre, paste0("Pre_", safe_name, ".png")), p, width = 8, height = 5)
+  dat_pre <- desc_stats %>% filter(Metric == metric, Trail == "Pre")
+  if (nrow(dat_pre) > 0) {
+    dat_p_pre <- dat_pre %>% left_join(p_map, by = c("Metric", "Stage")) %>%
+      mutate(label_Bet = ifelse(p_Bet_Pre < 0.05, "$", NA))
+    
+    scale_info_pre <- calc_dynamic_y_scale_bar(dat_p_pre, "Mean", "SEM")
+    
+    p_base_pre <- create_flexible_bar_plot(
+      df = dat_p_pre, x_col = "Stage", y_col = "Mean", err_col = "SEM", group_col = "Group",
+      scale_info = scale_info_pre, title_text = paste0(metric, " - Pre Test"), y_label = unit_lab, color_pal = my_fill
+    )
+    # 【關鍵修正】：移除 anno_subtitle
+    p_anno_pre <- add_annotations_bar(
+      p = p_base_pre, df = dat_p_pre, x_col = "Stage", y_col = "Mean", err_col = "SEM", group_col = "Group",
+      scale_info = scale_info_pre, groupA_name = Group_A, groupB_name = Group_B
+    )
+    
+    ggsave(file.path(dir_pure$pre, paste0("Pre_", safe_name, ".png")), p_base_pre, width = 8, height = 5, bg="white")
+    ggsave(file.path(dir_anno$pre, paste0("Pre_", safe_name, ".png")), p_anno_pre, width = 8, height = 5, bg="white")
   }
-
+  
   # --- 3. Post Plot ---
-  dat_p <- desc_stats %>% filter(Metric == metric, Trail == "Post")
-  if (nrow(dat_p) > 0) {
-    p <- ggplot(dat_p, aes(x = Stage, y = Mean, fill = Group)) +
-      geom_bar(stat = "identity", position = position_dodge(0.8), width = 0.7, color = "black") +
-      geom_errorbar(aes(ymin = Mean - SEM, ymax = Mean + SEM), position = position_dodge(0.8), width = 0.25) +
-      scale_fill_manual(values = my_fill) +
-      labs(title = paste0(metric, " - Post Test"), y = unit_lab, x = "Time") +
-      theme_classic() +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top", aspect.ratio = 0.5) +
-      scale_y_continuous(expand = expansion(mult = c(0.05, 0.2)))
-    ggsave(file.path(dir_pure$post, paste0("Post_", safe_name, ".png")), p, width = 8, height = 5)
-
-    # Annotated ($)
-    anno <- dat_p %>%
-      left_join(p_map, by = c("Metric", "Stage")) %>%
-      filter(p_Bet_Post < 0.05) %>%
-      group_by(Stage) %>%
-      summarise(y = max(Mean + SEM) * 1.1, label = "$", .groups = "drop")
-    if (nrow(anno) > 0) p <- p + geom_text(data = anno, aes(x = Stage, y = y, label = label), inherit.aes = F, size = 6, fontface = "bold")
-    ggsave(file.path(dir_anno$post, paste0("Post_", safe_name, ".png")), p, width = 8, height = 5)
+  dat_post <- desc_stats %>% filter(Metric == metric, Trail == "Post")
+  if (nrow(dat_post) > 0) {
+    dat_p_post <- dat_post %>% left_join(p_map, by = c("Metric", "Stage")) %>%
+      mutate(label_Bet = ifelse(p_Bet_Post < 0.05, "$", NA))
+    
+    scale_info_post <- calc_dynamic_y_scale_bar(dat_p_post, "Mean", "SEM")
+    
+    p_base_post <- create_flexible_bar_plot(
+      df = dat_p_post, x_col = "Stage", y_col = "Mean", err_col = "SEM", group_col = "Group",
+      scale_info = scale_info_post, title_text = paste0(metric, " - Post Test"), y_label = unit_lab, color_pal = my_fill
+    )
+    # 【關鍵修正】：移除 anno_subtitle
+    p_anno_post <- add_annotations_bar(
+      p = p_base_post, df = dat_p_post, x_col = "Stage", y_col = "Mean", err_col = "SEM", group_col = "Group",
+      scale_info = scale_info_post, groupA_name = Group_A, groupB_name = Group_B
+    )
+    
+    ggsave(file.path(dir_pure$post, paste0("Post_", safe_name, ".png")), p_base_post, width = 8, height = 5, bg="white")
+    ggsave(file.path(dir_anno$post, paste0("Post_", safe_name, ".png")), p_anno_post, width = 8, height = 5, bg="white")
   }
 }
 
-message("🎉 任務完成！")
+message("🎉 任務完成！所有高品質柱狀圖已生成。")

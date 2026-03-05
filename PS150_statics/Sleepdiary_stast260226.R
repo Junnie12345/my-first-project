@@ -44,7 +44,7 @@ base_dir <- file.path(
   "桌面", "PS150_results", "2026"
 )
 input_file <- file.path(base_dir, "Sleepdiary260117_all_clean.xlsx")
-output_file <- file.path(base_dir, "Sleepdiary_stats_260226_1.xlsx")
+output_file <- file.path(base_dir, "Sleepdiary_stats_260302.xlsx")
 
 # --- 輸入檔案存在性檢查 ---
 if (!file.exists(input_file)) {
@@ -413,124 +413,45 @@ lapply(
 plot_sum <- desc_data %>% rename(measure = variable, avg = mean, se = sem)
 use_ar1 <- nrow(gee_spec_res$pw_time) > 0
 
+
+# 【關鍵新增】載入外部繪圖工具包！
+source("C:\\github\\my-first-project\\my-first-project\\PS150_statics\\functioin\\Line_plot_tool.R")
+
 # ==============================================================================
-# === 8. 繪圖函數定義 ====
+# === 8. 繪圖函數定義 (僅保留 Trend Plot 與 Pairplot) ====
 # ==============================================================================
-
-# 定義統一的錯開寬度，避免兩組資料點 / Error bar 完全重疊
-pd <- position_dodge(0.15)
-
-#' 1. 建立基礎折線圖 (保留 Error bar，加入 position_dodge)
-#'
-#' @param df_s  描述統計摘要資料 (含 week_numeric, avg, se, Group)
-#' @param measure_name  變數名稱 (用於標題)
-#' @param y_breaks  Y 軸刻度
-#' @return ggplot 物件
-create_base_line_plot <- function(df_s, measure_name, y_breaks) {
-  ggplot(df_s, aes(
-    x = week_numeric, y = avg, group = Group,
-    color = Group, shape = Group
-  )) +
-    geom_line(linewidth = 1.2, alpha = 0.8, position = pd) +
-    geom_point(size = 4, position = pd) +
-    geom_errorbar(aes(ymin = avg - se, ymax = avg + se), width = 0.2, position = pd) +
-    scale_x_continuous(
-      breaks = sort(unique(df_s$week_numeric)),
-      name   = "Week",
-      expand = expansion(mult = 0.1)
-    ) +
-    scale_y_continuous(breaks = y_breaks, limits = range(y_breaks)) +
-    scale_color_manual(values = COLOR_PALETTE) +
-    scale_shape_manual(values = SHAPE_PALETTE) +
-    labs(title = measure_name, y = "Value") +
-    theme_classic() +
-    theme(
-      aspect.ratio = 1,
-      plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
-      plot.subtitle = element_text(size = 16, hjust = 0.5),
-      axis.title = element_text(size = 20, face = "bold"),
-      axis.text = element_text(size = 18, color = "black", face = "bold"),
-      legend.position = c(0.99, 0.99),
-      legend.justification = c("right", "top"),
-      legend.text = element_text(size = 14)
-    )
-}
-
-#' 2. 建立無 Error bar 版折線圖 (僅有均值點線，供簡報等場合使用)
-#'
-#' @param df_s  描述統計摘要資料 (含 week_numeric, avg, se, Group)
-#' @param measure_name  變數名稱 (用於標題)
-#' @param y_breaks  Y 軸刻度
-#' @return ggplot 物件
-create_base_line_plot_no_se <- function(df_s, measure_name, y_breaks) {
-  ggplot(df_s, aes(
-    x = week_numeric, y = avg, group = Group,
-    color = Group, shape = Group
-  )) +
-    geom_line(linewidth = 1.2, alpha = 0.8, position = pd) +
-    geom_point(size = 4, position = pd) +
-    # 刻意不加 geom_errorbar
-    scale_x_continuous(
-      breaks = sort(unique(df_s$week_numeric)),
-      name   = "Week",
-      expand = expansion(mult = 0.1)
-    ) +
-    scale_y_continuous(breaks = y_breaks, limits = range(y_breaks)) +
-    scale_color_manual(values = COLOR_PALETTE) +
-    scale_shape_manual(values = SHAPE_PALETTE) +
-    labs(title = measure_name, y = "Value") +
-    theme_classic() +
-    theme(
-      aspect.ratio = 1,
-      plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
-      plot.subtitle = element_text(size = 16, hjust = 0.5),
-      axis.title = element_text(size = 20, face = "bold"),
-      axis.text = element_text(size = 18, color = "black", face = "bold"),
-      legend.position = c(0.99, 0.99),
-      legend.justification = c("right", "top"),
-      legend.text = element_text(size = 14)
-    )
-}
-
-#' 3. 加上顯著性標註 (加入 position_dodge 與動態高度避開 Error bar)
-add_annotations <- function(p, df_s, pmax) {
-  # 計算一個安全的 Y 軸間距 (取數據全距的 4% 作為緩衝)
-  y_offset <- (max(df_s$avg + df_s$se, na.rm = TRUE) - min(df_s$avg - df_s$se, na.rm = TRUE)) * 0.04
-
-  p +
-    # 組內顯著性標記 (* / #)：加上 y_offset 安全距離 + position_dodge
-    geom_text(aes(label = label_time, y = avg + se + y_offset),
-      vjust = 0, size = 7, show.legend = FALSE, na.rm = TRUE, position = pd
-    ) +
-    # 組間顯著性標記 ($)：置於圖表上方
-    geom_text(
-      data = df_s %>% filter(!is.na(label_AB)),
-      aes(label = label_AB, x = week_numeric, y = pmax),
-      color = "black", vjust = 1, size = 6, show.legend = FALSE, na.rm = TRUE
-    ) +
-    labs(subtitle = "(*: placebo vs Pre, #: PS150 vs Pre, $: placebo vs PS150)")
+# 【新增】：動態判斷 Y 軸單位的輔助函數 (極簡版)
+get_y_label <- function(measure_name) {
+  if (measure_name %in% c("TST", "TRT", "WASO")) {
+    return("min")            # 直接回傳 min
+  } else if (measure_name == "SE") {
+    return("TST/TRT(%)")     # 直接回傳 TST/TRT(%)
+  } else {
+    return("Score")          # 直接回傳 Score
+  }
 }
 
 ## 長期趨勢散佈圖 (含線性回歸)-----
 create_trend_plot <- function(plot_df, measure_name, plot_top_limit) {
-  # 創建統一的 Jitter，確保點跟線的位移完全一致
   pos_jitter <- position_jitter(width = 0.15, seed = 42)
-
+  
+  # 取得正確的 Y 軸單位
+  dynamic_y_label <- get_y_label(measure_name)
+  
   ggplot(plot_df, aes(x = week_numeric, y = value, color = Group, fill = Group)) +
     geom_point(alpha = 0.4, size = 2.5, position = pos_jitter) +
     geom_smooth(method = "lm", se = TRUE, alpha = 0.15, linewidth = 1.5) +
-
-    # 使用 output.type = "text" 並手動加上顯著性星號
+    
     stat_cor(
-      data = plot_df %>% filter(Group == "placebo"),
-      aes(label = paste0("placebo: ", after_stat(r.label), ", ", after_stat(p.label), ifelse(after_stat(p) < 0.05, " *", ""))),
+      data = plot_df %>% filter(Group == levels(plot_df$Group)[1]),
+      aes(label = paste0(levels(plot_df$Group)[1], ": ", after_stat(r.label), ", ", after_stat(p.label), ifelse(after_stat(p) < 0.05, " *", ""))),
       method = "pearson", label.x.npc = 0.05, label.y.npc = 0.96,
       size = 6, geom = "label", fill = "white", color = "black",
       alpha = 0.8, fontface = "bold", show.legend = FALSE, output.type = "text"
     ) +
     stat_cor(
-      data = plot_df %>% filter(Group == "PS150"),
-      aes(label = paste0("PS150: ", after_stat(r.label), ", ", after_stat(p.label), ifelse(after_stat(p) < 0.05, " *", ""))),
+      data = plot_df %>% filter(Group == levels(plot_df$Group)[2]),
+      aes(label = paste0(levels(plot_df$Group)[2], ": ", after_stat(r.label), ", ", after_stat(p.label), ifelse(after_stat(p) < 0.05, " *", ""))),
       method = "pearson", label.x.npc = 0.05, label.y.npc = 0.86,
       size = 6, geom = "label", fill = "white", color = "black",
       alpha = 0.8, fontface = "bold", show.legend = FALSE, output.type = "text"
@@ -545,8 +466,8 @@ create_trend_plot <- function(plot_df, measure_name, plot_top_limit) {
     ) +
     labs(
       title    = paste0("Trend: ", measure_name),
-      subtitle = "Linear Regression (Original)",
-      y        = "Value"
+      subtitle = "Linear Regression",
+      y        = dynamic_y_label  # 【套用動態 Y 軸標籤】
     ) +
     theme_bw() +
     theme(
@@ -562,7 +483,6 @@ create_trend_plot <- function(plot_df, measure_name, plot_top_limit) {
 
 ## Spaghetti 版：長期趨勢散佈圖 (加入個體連線)----
 create_trend_plot_spaghetti <- function(plot_df, measure_name, plot_top_limit) {
-  # 動態計算 rmcorr，並自動判斷是否加上星號
   calc_rmcorr_label <- function(df_subset, group_name) {
     tryCatch(
       {
@@ -576,28 +496,29 @@ create_trend_plot_spaghetti <- function(plot_df, measure_name, plot_top_limit) {
       }
     )
   }
-
-  label_placebo <- calc_rmcorr_label(plot_df %>% filter(Group == "placebo"), "placebo")
-  label_ps150 <- calc_rmcorr_label(plot_df %>% filter(Group == "PS150"), "PS150")
+  
+  label_GroupA <- calc_rmcorr_label(plot_df %>% filter(Group == levels(plot_df$Group)[1]), levels(plot_df$Group)[1])
+  label_GroupB <- calc_rmcorr_label(plot_df %>% filter(Group == levels(plot_df$Group)[2]), levels(plot_df$Group)[2])
   label_x_pos <- min(plot_df$week_numeric, na.rm = TRUE) + 0.1
-
-  # 創建統一的 Jitter
+  
   pos_jitter <- position_jitter(width = 0.15, seed = 42)
-
+  
+  # 取得正確的 Y 軸單位
+  dynamic_y_label <- get_y_label(measure_name)
+  
   ggplot(plot_df, aes(x = week_numeric, y = value, color = Group, fill = Group)) +
-    # 【修復】讓點跟線共用同一個 Jitter，保證完美相連
     geom_line(aes(group = ID), alpha = 0.2, linewidth = 0.5, position = pos_jitter) +
     geom_point(alpha = 0.4, size = 2.5, position = pos_jitter) +
     geom_smooth(method = "lm", se = TRUE, alpha = 0.15, linewidth = 1.5) +
     annotate("label",
-      x = label_x_pos, y = plot_top_limit * 0.95,
-      label = label_placebo, color = "#31688E", fill = "white",
-      fontface = "bold", hjust = 0, size = 5
+             x = label_x_pos, y = plot_top_limit * 0.95,
+             label = label_GroupA, color = COLOR_PALETTE[1], fill = "white",
+             fontface = "bold", hjust = 0, size = 5
     ) +
     annotate("label",
-      x = label_x_pos, y = plot_top_limit * 0.88,
-      label = label_ps150, color = "#E67E22", fill = "white",
-      fontface = "bold", hjust = 0, size = 5
+             x = label_x_pos, y = plot_top_limit * 0.88,
+             label = label_GroupB, color = COLOR_PALETTE[2], fill = "white",
+             fontface = "bold", hjust = 0, size = 5
     ) +
     scale_color_manual(values = COLOR_PALETTE) +
     scale_fill_manual(values = COLOR_PALETTE) +
@@ -610,7 +531,7 @@ create_trend_plot_spaghetti <- function(plot_df, measure_name, plot_top_limit) {
     labs(
       title    = paste0("Trend: ", measure_name),
       subtitle = "Spaghetti Plot with Repeated Measures Correlation (rmcorr)",
-      y        = "Value"
+      y        = dynamic_y_label  # 【套用動態 Y 軸標籤】
     ) +
     theme_bw() +
     theme(
@@ -625,23 +546,16 @@ create_trend_plot_spaghetti <- function(plot_df, measure_name, plot_top_limit) {
 }
 
 ## Pairplot----
-
-#' 繪製並儲存 Pairplot (相關矩陣圖)
-#'
-#' @param data  長格式資料
-#' @param vars  要繪製的變數名稱向量
-#' @param title_suffix  圖表標題後綴
-#' @param save_dir  儲存目錄
 plot_pair <- function(data, vars, title_suffix, save_dir) {
   df_sub <- data %>%
     select(Group, all_of(vars)) %>%
     na.omit() %>%
-    mutate(Group = factor(Group, levels = c("placebo", "PS150")))
-
+    mutate(Group = factor(Group, levels = levels(data$Group))) # 動態取 levels
+  
   if (nrow(df_sub) == 0) {
     return(invisible(NULL))
   }
-
+  
   p <- ggpairs(
     df_sub,
     columns = 2:ncol(df_sub),
@@ -659,7 +573,7 @@ plot_pair <- function(data, vars, title_suffix, save_dir) {
       strip.text = element_text(size = 16, face = "bold", color = "black"),
       plot.title = element_text(size = 20, face = "bold", hjust = 0.5)
     )
-
+  
   ggsave(
     file.path(save_dir, paste0("Correlation_", title_suffix, ".png")),
     p,
@@ -669,16 +583,21 @@ plot_pair <- function(data, vars, title_suffix, save_dir) {
 
 
 # ==============================================================================
-# === 9. 繪圖：Annotated & Pure (折線圖) ===
+# === 9. 繪圖：Annotated & Pure (折線圖) - 完美對接 Line_plot_tool ====
 # ==============================================================================
 message(">>> [8/10] 繪製折線圖 (Trend Plot with SEM)...")
 
-# --- 步驟 9.1：預處理 GEE 顯著性對照表 (修正為 Long Format 合併) ---
 time_sig <- data.frame(Variable = character(), Group = factor(), week_numeric = numeric(), label_time = character())
 group_sig <- data.frame(Variable = character(), week_numeric = numeric(), label_AB = character())
 
+group_names <- levels(long$Group)
+Group_A <- group_names[1] 
+Group_B <- group_names[2]
+
+dynamic_subtitle <- sprintf("(*: %s vs Pre, #: %s vs Pre, $: %s vs %s)", 
+                            Group_A, Group_B, Group_A, Group_B)
+
 if (use_ar1) {
-  # === 處理組內時間比較 (vs 基線) ===
   time_sig <- gee_spec_res$pw_time %>%
     mutate(
       week_1 = as.numeric(str_extract(contrast, "(?<=week_factor)\\d+(?=\\s*-)")),
@@ -689,15 +608,14 @@ if (use_ar1) {
       week_numeric = ifelse(week_1 == 0, week_2, week_1),
       is_sig = p.value < ALPHA_SIGNIFICANCE,
       label_time = case_when(
-        is_sig & Group == "placebo" ~ "*",
-        is_sig & Group == "PS150" ~ "#",
+        is_sig & Group == Group_A ~ "*",
+        is_sig & Group == Group_B ~ "#",
         TRUE ~ NA_character_
       )
     ) %>%
     filter(!is.na(label_time)) %>%
     select(Variable, Group, week_numeric, label_time)
-
-  # === 處理組間比較 (同一時間點 placebo vs PS150) ===
+  
   group_sig <- gee_spec_res$pw_group %>%
     mutate(
       week_numeric = as.numeric(as.character(week_factor)),
@@ -709,70 +627,94 @@ if (use_ar1) {
     distinct()
 }
 
-# --- 步驟 9.2：開始繪圖 ---
 vars_to_plot <- unique(plot_sum$measure)
 pb_line <- txtProgressBar(min = 0, max = length(vars_to_plot), style = 3)
+
+my_dodge_w <- 0.4
+
+# 定義要覆寫的字體大小 (比預設大一號)
+custom_text_theme <- theme(
+  aspect.ratio = 1, # 1:1 正方形
+  axis.title = element_text(size = 22, face = "bold"), # 軸標題放大
+  axis.text  = element_text(size = 18, color = "black", face = "bold") # 軸刻度數字放大
+)
 
 for (i in seq_along(vars_to_plot)) {
   m <- vars_to_plot[i]
   df_s <- plot_sum %>% filter(measure == m)
-
+  
   if (nrow(df_s) == 0) {
     setTxtProgressBar(pb_line, i)
     next
   }
-
-  # 乾淨的 Left Join：組內與組間分開合併，確保各組只拿自己的標記
+  
   if (use_ar1) {
-    sub_time <- time_sig %>%
-      filter(Variable == m) %>%
-      select(-Variable)
-    sub_group <- group_sig %>%
-      filter(Variable == m) %>%
-      select(-Variable)
-
+    sub_time <- time_sig %>% filter(Variable == m) %>% select(-Variable)
+    sub_group <- group_sig %>% filter(Variable == m) %>% select(-Variable)
+    
     df_s <- df_s %>%
       left_join(sub_time, by = c("Group", "week_numeric")) %>%
       left_join(sub_group, by = "week_numeric")
   }
-
+  
   if (!"label_time" %in% names(df_s)) df_s$label_time <- NA
   if (!"label_AB" %in% names(df_s)) df_s$label_AB <- NA
-
+  
   base_w <- min(df_s$week_numeric, na.rm = TRUE)
   df_s <- df_s %>%
     mutate(
       label_time = ifelse(week_numeric == base_w, NA, label_time),
       label_AB   = ifelse(week_numeric == base_w, NA, label_AB)
     )
-
-  ymin <- min(df_s$avg - df_s$se, na.rm = TRUE)
-  ymax <- max(df_s$avg + df_s$se, na.rm = TRUE)
-  if (ymin == ymax) {
-    ymin <- ymin - 0.1
-    ymax <- ymax + 0.1
-  }
-  pmax_val <- ymax + (ymax - ymin) * 0.15
-  brks <- pretty(c(ymin, pmax_val), n = 5)
-  if (length(brks) > 6) brks <- pretty(c(ymin, pmax_val), n = 4)
-
-  p_base <- create_base_line_plot(df_s, m, brks)
-  p_anno <- add_annotations(p_base, df_s, pmax_val)
-
-  # 新增無 Error bar 版本
-  p_base_no_se <- create_base_line_plot_no_se(df_s, m, brks)
-  p_anno_no_se <- add_annotations(p_base_no_se, df_s, pmax_val)
-
+  
+  scale_info <- calc_dynamic_y_scale(df_s, error_ratio = 0.15)
+  diary_dodge <- 0.4 
+  
+  # 取得當前變數的專屬 Y 軸名稱
+  current_y_label <- get_y_label(m)
+  
+  suppressMessages(suppressWarnings({
+    # [A] 有 Error Bar 版本
+    p_base <- create_flexible_line_plot(
+      df_s = df_s, y_breaks = scale_info$breaks, y_limits = scale_info$limits,
+      title_text = m, 
+      y_label = current_y_label, # 【套用動態 Y 軸標籤】
+      color_pal = COLOR_PALETTE, shape_pal = SHAPE_PALETTE,
+      dodge_w = diary_dodge 
+    ) + custom_text_theme # 🌟【關鍵覆寫】：字體大一號 + 1:1 比例
+    
+    p_anno <- add_annotations_flexible(
+      p = p_base, df_s = df_s, scale_info = scale_info, anno_subtitle = dynamic_subtitle,
+      dodge_w = diary_dodge 
+    )
+    
+    # [B] 無 Error Bar 版本
+    p_base_no_se <- create_flexible_line_plot_no_se(
+      df_s = df_s, y_breaks = scale_info$breaks, y_limits = scale_info$limits,
+      title_text = m, 
+      y_label = current_y_label, # 【套用動態 Y 軸標籤】
+      color_pal = COLOR_PALETTE, shape_pal = SHAPE_PALETTE,
+      dodge_w = diary_dodge 
+    ) + custom_text_theme # 🌟【關鍵覆寫】：字體大一號 + 1:1 比例
+    
+    p_anno_no_se <- add_annotations_flexible(
+      p = p_base_no_se, df_s = df_s, scale_info = scale_info, anno_subtitle = dynamic_subtitle,
+      dodge_w = diary_dodge 
+    )
+  }))
+  
   ggsave(file.path(diary_path_anno, paste0(m, "_Annotated.png")), p_anno, width = 8, height = 8, bg = "white")
   ggsave(file.path(diary_path_pure, paste0(m, "_Pure.png")), p_base, width = 8, height = 8, bg = "white")
   ggsave(file.path(diary_path_anno, paste0(m, "_Annotated_NoSE.png")), p_anno_no_se, width = 8, height = 8, bg = "white")
-
+  
   setTxtProgressBar(pb_line, i)
 }
 close(pb_line)
 message("✅ 折線圖繪製完成")
-# ==============================================================================
-# === 10. 繪圖：Correlation Pairplots ===
+
+
+
+# === 10. 繪圖：Correlation Pairplots ====
 # ==============================================================================
 message(">>> [9/10] 繪製 Pairplots...")
 diary_path_cor <- file.path(main_plot_path, "Sleepdiary_COR")
@@ -806,36 +748,33 @@ pb_trend <- txtProgressBar(min = 0, max = length(trend_vars), style = 3)
 for (i in seq_along(trend_vars)) {
   m <- trend_vars[i]
   plot_df <- trend_data %>% filter(measure == m)
-
+  
   if (nrow(plot_df) < 10) {
     setTxtProgressBar(pb_trend, i)
     next
   }
-
+  
   y_max_val <- max(plot_df$value, na.rm = TRUE)
   y_min_val <- min(plot_df$value, na.rm = TRUE)
   y_range <- y_max_val - y_min_val
   plot_top_limit <- y_max_val + (y_range * 0.35)
-
-  # 原版趨勢圖 (僅散佈點 + 回歸線，無 label.size 警告)
+  
+  # 原版趨勢圖
   p_trend_orig <- create_trend_plot(plot_df, m, plot_top_limit)
   ggsave(file.path(diary_path_trend, paste0(m, "_LinearTrend.png")),
-    p_trend_orig,
-    width = 8, height = 8, bg = "white"
+         p_trend_orig, width = 8, height = 8, bg = "white"
   )
-
-  # Spaghetti 版趨勢圖 (加入個體連線 & rmcorr 標註)
+  
+  # Spaghetti 版趨勢圖
   p_trend_spag <- create_trend_plot_spaghetti(plot_df, m, plot_top_limit)
   ggsave(file.path(diary_path_trend, paste0(m, "_Spaghetti.png")),
-    p_trend_spag,
-    width = 8, height = 8, bg = "white"
+         p_trend_spag, width = 8, height = 8, bg = "white"
   )
-
+  
   setTxtProgressBar(pb_trend, i)
 }
 close(pb_trend)
 message("✅ 趨勢圖繪製完成")
-
 
 message("\n==============================================")
 message("🎉🎉🎉 全部流程執行完畢！所有圖表已生成 🎉🎉🎉")

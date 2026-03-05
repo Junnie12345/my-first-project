@@ -10,13 +10,13 @@ for (pkg in required_packages) {
 # === 2. 設定路徑與讀取資料 ===
 base_dir <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\"
 input_file <- paste0(base_dir, "受試者進度紀錄與基本資料260117_clean.xlsx")
-output_file <- paste0(base_dir, "QUE分析_Full_260130_V2.xlsx")
+output_file <- paste0(base_dir, "QUE分析_Full_260303.xlsx")
 
 # 讀取資料
 message("讀取檔案: ", input_file)
 data <- read.xlsx(input_file, sheet = "完整資料")
 
-# 性別清洗 (維持數值化以便統計)
+# 性別清洗與欄位名稱英文化 (維持數值化以便統計)
 data <- data %>%
   mutate(
     Sex = case_when(
@@ -25,7 +25,18 @@ data <- data %>%
       TRUE ~ NA_character_
     ),
     Sex = as.numeric(Sex)
-  )
+  ) %>%
+  # 【新增】：將中文欄位名稱替換為英文縮寫，完美保留 _pre 與 _post 後綴
+  rename_with(~ stringr::str_replace_all(., c(
+    "日間活動失能" = "DayDys",
+    "睡眠困擾" = "SlpDist",
+    "睡眠效率" = "SlpEff",
+    "睡眠潛伏期" = "SlpLat",
+    "睡眠時長" = "SlpDur",
+    "睡眠用藥" = "SlpMed",
+    "睡眠評價" = "SlpQual"
+  )))
+
 
 # ==============================================================================
 # === 3. 資料前處理 (關鍵修正：直接使用 A/B) ===
@@ -75,6 +86,27 @@ long_data <- data %>%
   select(-Group_clean) %>%
   filter(!is.na(Group)) %>%
   filter(!is.na(score))
+
+# 為標準化分析準備欄位
+long_data <- long_data %>%
+  mutate(
+    Trail = time,
+    measure_full = measure
+  )
+
+# 標記成對資料 (同一受試者在同一量表同時有 Pre 和 Post)
+valid_ids <- long_data %>%
+  filter(Trail %in% c("Pre", "Post")) %>%
+  group_by(measure_full, ID) %>%
+  filter(n_distinct(Trail) == 2) %>%
+  ungroup() %>%
+  select(ID, measure_full) %>%
+  distinct() %>%
+  mutate(Is_Paired = TRUE)
+
+long_data <- long_data %>%
+  left_join(valid_ids, by = c("ID", "measure_full")) %>%
+  mutate(Is_Paired = replace_na(Is_Paired, FALSE))
 
 message("長資料 (Long) 筆數: ", nrow(long_data))
 
@@ -509,62 +541,212 @@ reg_results_df <- bind_rows(reg_results_list)
 message("  -> 改變量回歸分析完成，共 ", nrow(reg_results_df), " 列結果")
 
 # ==============================================================================
-# === 7. 匯出 Excel (更新版) ====
+# === 6.6 標準化輸出表格 ====
+# ==============================================================================
+message("--- [Step 6.6] 製作標準化輸出表格 ---")
+
+# 只取 Pre/Post 資料進行分析
+long_prepost <- long_data %>%
+  filter(Trail %in% c("Pre", "Post")) %>%
+  mutate(Trail = factor(Trail, levels = c("Pre", "Post")))
+
+# ==================================
+# ==== Sheet 1: 基礎統計+常態檢定 ====
+# ==================================
+message("計算基礎描述與常態檢定...")
+
+std_desc_normality <- long_prepost %>%
+  group_by(Group, Trail, measure_full) %>%
+  summarise(
+    n = n(),
+    Mean = mean(score, na.rm = TRUE),
+    SD = sd(score, na.rm = TRUE),
+    Median = median(score, na.rm = TRUE),
+    IQR = IQR(score, na.rm = TRUE),
+    Shapiro_p = ifelse(n() >= 3, shapiro.test(score)$p.value, NA),
+    .groups = "drop"
+  ) %>%
+  mutate(Is_Normal = ifelse(Shapiro_p > 0.05, "Yes", "No")) %>%
+  arrange(measure_full, Group, Trail)
+
+# ==================================
+# ==== Sheet 2: 正規結果總表 (Pre/Post) ====
+# ==================================
+message("計算 Pre/Post 正規報表...")
+
+# 2.1 Mean/SEM 寬表格
+std_stats_paper <- std_desc_normality %>%
+  mutate(SEM = SD / sqrt(n)) %>%
+  pivot_wider(
+    id_cols = measure_full,
+    names_from = c(Group, Trail),
+    values_from = c(Mean, SEM),
+    names_glue = "{Group}_{.value}_{Trail}"
+  ) %>%
+  select(
+    measure_full,
+    any_of(c(
+      "placebo_Mean_Pre", "placebo_SEM_Pre", "placebo_Mean_Post", "placebo_SEM_Post",
+      "PS150_Mean_Pre", "PS150_SEM_Pre", "PS150_Mean_Post", "PS150_SEM_Post"
+    ))
+  )
+
+# 2.2 無母數 P 值 (Wilcoxon within + Mann-Whitney between)
+p_within_w <- long_prepost %>%
+  filter(Is_Paired == TRUE) %>%
+  group_by(Group, measure_full) %>%
+  filter(n() > 2) %>%
+  wilcox_test(score ~ Trail, paired = TRUE) %>%
+  select(Group, measure_full, p) %>%
+  pivot_wider(names_from = Group, values_from = p, names_prefix = "p_Within_")
+
+p_between_w <- long_prepost %>%
+  group_by(Trail, measure_full) %>%
+  filter(n_distinct(Group) == 2) %>%
+  wilcox_test(score ~ Group) %>%
+  select(Trail, measure_full, p) %>%
+  pivot_wider(names_from = Trail, values_from = p, names_prefix = "p_Between_")
+
+std_sheet2_nonpara <- std_stats_paper %>%
+  left_join(p_within_w, by = "measure_full") %>%
+  left_join(p_between_w, by = "measure_full")
+
+# 2.3 有母數 P 值 (Paired T within + Independent T between)
+p_within_t <- long_prepost %>%
+  filter(Is_Paired == TRUE) %>%
+  group_by(Group, measure_full) %>%
+  filter(n() > 2) %>%
+  t_test(score ~ Trail, paired = TRUE) %>%
+  select(Group, measure_full, p) %>%
+  pivot_wider(names_from = Group, values_from = p, names_prefix = "p_Within_")
+
+p_between_t <- long_prepost %>%
+  group_by(Trail, measure_full) %>%
+  filter(n_distinct(Group) == 2) %>%
+  t_test(score ~ Group) %>%
+  select(Trail, measure_full, p) %>%
+  pivot_wider(names_from = Trail, values_from = p, names_prefix = "p_Between_")
+
+std_sheet2_para <- std_stats_paper %>%
+  left_join(p_within_t, by = "measure_full") %>%
+  left_join(p_between_t, by = "measure_full")
+
+# ==================================
+# ==== Sheet 3: 差值比較表 (Delta) ====
+# ==================================
+message("計算差值 (Delta) 與分析...")
+
+# 3.1 計算每個人的 Delta
+std_delta_data <- long_prepost %>%
+  filter(Is_Paired == TRUE) %>%
+  select(ID, Group, Trail, measure_full, score) %>%
+  pivot_wider(names_from = Trail, values_from = score) %>%
+  mutate(Diff = Post - Pre) %>%
+  filter(!is.na(Diff))
+
+# 3.2 計算 Delta 的 Mean 和 SEM
+std_delta_stats <- std_delta_data %>%
+  group_by(measure_full, Group) %>%
+  summarise(
+    mean = mean(Diff, na.rm = TRUE),
+    sd = sd(Diff, na.rm = TRUE),
+    n = n(),
+    sem = sd / sqrt(n),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    id_cols = measure_full,
+    names_from = Group,
+    values_from = c(mean, sem),
+    names_glue = "diff_{.value}_{Group}"
+  ) %>%
+  rename_with(~ sub("diff_sem", "diff_SEM", .x), contains("diff_sem")) %>%
+  select(
+    measure_full,
+    any_of(c("diff_mean_placebo", "diff_SEM_placebo", "diff_mean_PS150", "diff_SEM_PS150"))
+  )
+
+# 3.3 無母數差值檢定 (Mann-Whitney U)
+std_delta_test_w <- std_delta_data %>%
+  group_by(measure_full) %>%
+  filter(n_distinct(Group) == 2) %>%
+  wilcox_test(Diff ~ Group) %>%
+  select(measure_full, p) %>%
+  mutate(method = "Mann-Whitney U")
+
+std_sheet3_nonpara <- std_delta_stats %>%
+  left_join(std_delta_test_w, by = "measure_full")
+
+# 3.4 有母數差值檢定 (Independent T-test)
+std_delta_test_t <- std_delta_data %>%
+  group_by(measure_full) %>%
+  filter(n_distinct(Group) == 2) %>%
+  t_test(Diff ~ Group) %>%
+  select(measure_full, p) %>%
+  mutate(method = "Independent T-test")
+
+std_sheet3_para <- std_delta_stats %>%
+  left_join(std_delta_test_t, by = "measure_full")
+
+# ==============================================================================
+# === 7. 匯出 Excel (標準化版) ====
 # ==============================================================================
 message("--- [Step 7] 匯出 Excel ---")
 wb <- createWorkbook()
+style_sig <- createStyle(bgFill = "#FFFF00")
+style_warn <- createStyle(fontColour = "#FF0000", textDecoration = "bold")
 
-# 新增整合後的 Baseline 表格 (取代原本零散的 sheet)
+# Baseline 表格
 if (exists("baseline_table_final")) {
   addWorksheet(wb, "Baseline_Table")
   writeData(wb, "Baseline_Table", baseline_table_final)
 }
 
-# 其他原本的 Sheet 保持不變
-if (exists("survey_stats")) {
-  addWorksheet(wb, "Survey_Stats")
-  writeData(wb, "Survey_Stats", survey_stats)
-}
-if (exists("normality_results")) {
-  addWorksheet(wb, "Normality")
-  writeData(wb, "Normality", normality_results)
-}
+# Sheet 1: 基礎描述與常態檢定 (合併 survey_stats + normality)
+addWorksheet(wb, "0_基礎描述與常態檢定")
+writeData(wb, "0_基礎描述與常態檢定", std_desc_normality)
+conditionalFormatting(wb, "0_基礎描述與常態檢定",
+  cols = which(names(std_desc_normality) == "Shapiro_p"),
+  rows = 2:5000, rule = "<0.05", style = style_warn
+)
 
-if (nrow(intragroup_t_results_df) > 0) {
-  addWorksheet(wb, "Intra_T")
-  writeData(wb, "Intra_T", intragroup_t_results_df)
-}
-if (nrow(intragroup_wilcox_results_df) > 0) {
-  addWorksheet(wb, "Intra_Wilcoxon")
-  writeData(wb, "Intra_Wilcoxon", intragroup_wilcox_results_df)
-}
-if (nrow(intragroup_es_results_df) > 0) {
+# Sheet 2: 無母數結果總表 (Wilcoxon within + Mann-Whitney between)
+addWorksheet(wb, "1_無母數結果總表")
+writeData(wb, "1_無母數結果總表", std_sheet2_nonpara)
+addStyle(wb, "1_無母數結果總表", createStyle(numFmt = "0.00"), rows = 2:5000, cols = 2:9, gridExpand = TRUE)
+addStyle(wb, "1_無母數結果總表", createStyle(numFmt = "0.000"), rows = 2:5000, cols = 10:13, gridExpand = TRUE)
+p_cols_np <- which(grepl("p_", names(std_sheet2_nonpara)))
+if (length(p_cols_np) > 0) conditionalFormatting(wb, "1_無母數結果總表", cols = p_cols_np, rows = 2:5000, rule = "<0.05", style = style_sig)
+
+# Sheet 3: 有母數結果總表 (Paired T within + Independent T between)
+addWorksheet(wb, "2_有母數結果總表")
+writeData(wb, "2_有母數結果總表", std_sheet2_para)
+addStyle(wb, "2_有母數結果總表", createStyle(numFmt = "0.00"), rows = 2:5000, cols = 2:9, gridExpand = TRUE)
+addStyle(wb, "2_有母數結果總表", createStyle(numFmt = "0.000"), rows = 2:5000, cols = 10:13, gridExpand = TRUE)
+p_cols_p <- which(grepl("p_", names(std_sheet2_para)))
+if (length(p_cols_p) > 0) conditionalFormatting(wb, "2_有母數結果總表", cols = p_cols_p, rows = 2:5000, rule = "<0.05", style = style_sig)
+
+# Sheet 4: 無母數差值比較表
+addWorksheet(wb, "3_無母數差值比較表")
+writeData(wb, "3_無母數差值比較表", std_sheet3_nonpara)
+addStyle(wb, "3_無母數差值比較表", createStyle(numFmt = "0.00"), rows = 2:5000, cols = 2:5, gridExpand = TRUE)
+addStyle(wb, "3_無母數差值比較表", createStyle(numFmt = "0.000"), rows = 2:5000, cols = 6, gridExpand = TRUE)
+conditionalFormatting(wb, "3_無母數差值比較表", cols = 6, rows = 2:5000, rule = "<0.05", style = style_sig)
+
+# Sheet 5: 有母數差值比較表
+addWorksheet(wb, "4_有母數差值比較表")
+writeData(wb, "4_有母數差值比較表", std_sheet3_para)
+addStyle(wb, "4_有母數差值比較表", createStyle(numFmt = "0.00"), rows = 2:5000, cols = 2:5, gridExpand = TRUE)
+addStyle(wb, "4_有母數差值比較表", createStyle(numFmt = "0.000"), rows = 2:5000, cols = 6, gridExpand = TRUE)
+conditionalFormatting(wb, "4_有母數差值比較表", cols = 6, rows = 2:5000, rule = "<0.05", style = style_sig)
+
+# Effect Size (保留)
+if (exists("intragroup_es_results_df") && nrow(intragroup_es_results_df) > 0) {
   addWorksheet(wb, "Intra_ES")
   writeData(wb, "Intra_ES", intragroup_es_results_df)
 }
-if (nrow(intergroup_t_results_df) > 0) {
-  addWorksheet(wb, "Inter_T")
-  writeData(wb, "Inter_T", intergroup_t_results_df)
-}
-if (nrow(intergroup_wilcox_results_df) > 0) {
-  addWorksheet(wb, "Inter_U")
-  writeData(wb, "Inter_U", intergroup_wilcox_results_df)
-}
 
-if (nrow(diff_stats) > 0) {
-  addWorksheet(wb, "Diff_Stats")
-  writeData(wb, "Diff_Stats", diff_stats)
-}
-if (nrow(diff_t_results_df) > 0) {
-  addWorksheet(wb, "Diff_T_ES")
-  writeData(wb, "Diff_T_ES", diff_t_results_df)
-}
-if (nrow(diff_u_results_df) > 0) {
-  addWorksheet(wb, "Diff_U")
-  writeData(wb, "Diff_U", diff_u_results_df)
-}
-
-# 改變量回歸分析結果 (無 控制 MEQ)
+# 改變量回歸分析結果 (無控制 MEQ)
 if (exists("reg_no_meq_results_df") && nrow(reg_no_meq_results_df) > 0) {
   addWorksheet(wb, "Reg_No_MEQ")
   writeData(wb, "Reg_No_MEQ", reg_no_meq_results_df)
@@ -577,44 +759,41 @@ if (exists("reg_results_df") && nrow(reg_results_df) > 0) {
 }
 
 saveWorkbook(wb, output_file, overwrite = TRUE)
-message("Excel 儲存成功！Baseline 表格已整合至 'Baseline_Table' 分頁。")
+message("Excel 儲存成功！已整合為標準化格式報表。")
 
 # ==============================================================================
-# === 8. 繪圖設定 =====
+# === 8. 繪圖設定 (載入強大的工具包) =====
 # ==============================================================================
 message("\n=== 開始繪圖流程 ===")
 folder_date <- format(Sys.Date(), "%y%m%d")
 plot_base_path <- file.path(base_dir, paste0("Plots_Output_", folder_date))
 path_trend_anno <- file.path(plot_base_path, "Que_Annotated")
 path_trend_pure <- file.path(plot_base_path, "Que_Pure")
-path_diff <- file.path(plot_base_path, "Que_Diff")
+path_diff_anno <- file.path(plot_base_path, "Que_Diff_Annotated")
+path_diff_pure <- file.path(plot_base_path, "Que_Diff_Pure")
 
-if (!dir.exists(path_trend_anno)) dir.create(path_trend_anno, recursive = TRUE)
-if (!dir.exists(path_trend_pure)) dir.create(path_trend_pure, recursive = TRUE)
-if (!dir.exists(path_diff)) dir.create(path_diff, recursive = TRUE)
+# 建立所有輸出資料夾
+lapply(
+  c(path_trend_anno, path_trend_pure, path_diff_anno, path_diff_pure),
+  function(x) if (!dir.exists(x)) dir.create(x, recursive = TRUE)
+)
+
+# 載入我們的雙引擎工具包
+source("C:\\github\\my-first-project\\my-first-project\\PS150_statics\\functioin\\Line_plot_tool.R")
+source("C:\\github\\my-first-project\\my-first-project\\PS150_statics\\functioin\\Bar_plot_tool.R")
 
 my_colors <- c("placebo" = "#31688E", "PS150" = "#E67E22")
 my_shapes <- c("placebo" = 16, "PS150" = 17)
 
-# ==============================================================================
-# === 9. 繪圖：趨勢圖 (Trend Plot) - 視覺優化版 =====
-# ==============================================================================
-message("--- 繪製趨勢圖 (直式 5:4 | 優化字體與 ErrorBar) ---")
+group_names <- levels(long_data$Group)
+Group_A <- "placebo"
+Group_B <- "PS150"
 
-# 準備繪圖數據
-plot_summary <- long_data %>%
-  filter(Group %in% c("placebo", "PS150"), time %in% c("Pre", "Post")) %>%
-  group_by(Group, measure, time) %>%
-  summarise(avg = mean(score, na.rm = T), sd = sd(score, na.rm = T), n = n(), se = sd / sqrt(n), .groups = "drop") %>%
-  mutate(time = factor(time, levels = c("Pre", "Post")), Group = factor(Group, levels = c("placebo", "PS150")))
-
-# 定義顯著性檢查函數 (連接 Step 5 的 T-test 結果)
+# 定義顯著性檢查函數 (維持原邏輯)
 check_intra <- function(grp, msr) {
-  # 防呆：確保結果表格存在且有內容
   if (!exists("intragroup_t_results_df") || nrow(intragroup_t_results_df) == 0) {
     return(FALSE)
   }
-
   res <- intragroup_t_results_df %>% filter(Group == grp, measure == msr)
   if (nrow(res) > 0 && !is.na(res$p) && res$p < 0.05) {
     return(TRUE)
@@ -626,7 +805,6 @@ check_inter <- function(msr, tm) {
   if (!exists("intergroup_t_results_df") || nrow(intergroup_t_results_df) == 0) {
     return(FALSE)
   }
-
   res <- intergroup_t_results_df %>% filter(measure == msr, time == tm)
   if (nrow(res) > 0 && !is.na(res$p) && res$p < 0.05) {
     return(TRUE)
@@ -634,206 +812,123 @@ check_inter <- function(msr, tm) {
   return(FALSE)
 }
 
-# 開始繪圖迴圈
-for (m in unique(plot_summary$measure)) {
-  df_sum <- plot_summary %>% filter(measure == m)
-  if (nrow(df_sum) == 0) next
-
-  # 1. 填寫顯著性標籤 (*, #, $)
-  df_sum$label_placebo <- NA
-  df_sum$label_PS150 <- NA
-  df_sum$label_AB <- NA
-
-  # placebo 組組內 (Post)
-  if (check_intra("placebo", m)) df_sum$label_placebo[df_sum$Group == "placebo" & df_sum$time == "Post"] <- "*"
-  # PS150 組組內 (Post)
-  if (check_intra("PS150", m)) df_sum$label_PS150[df_sum$Group == "PS150" & df_sum$time == "Post"] <- "#"
-  # 組間 (Pre / Post)
-  if (check_inter(m, "_pre")) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$time == "Pre"] <- "$"
-  if (check_inter(m, "_post")) df_sum$label_AB[df_sum$Group == "placebo" & df_sum$time == "Post"] <- "$"
-
-  # 2. Y 軸範圍與刻度計算
-  raw_min <- min(df_sum$avg - df_sum$se, na.rm = T)
-  raw_max <- max(df_sum$avg + df_sum$se, na.rm = T)
-
-  # 避免最大最小相同導致報錯
-  if (raw_min == raw_max) {
-    raw_min <- raw_min - 0.1
-    raw_max <- raw_max + 0.1
-  }
-
-  # 設定上方顯著性符號的位置 (比最高點再高 15%)
-  plot_max <- raw_max + (raw_max - raw_min) * 0.15
-
-  # 自動產生漂亮的刻度
-  breaks_seq <- pretty(c(raw_min, plot_max), n = 5)
-  if (length(breaks_seq) > 6) breaks_seq <- pretty(c(raw_min, plot_max), n = 4)
-
-  # --- 3. 繪圖核心 ---
-  p_base <- ggplot(df_sum, aes(x = time, y = avg, group = Group, color = Group, shape = Group)) +
-    # 線條
-    geom_line(linewidth = 1.2, alpha = 0.9) +
-    # 點
-    geom_point(size = 4.5) +
-    # 【修改 1】Error Bar 寬度縮小 (width = 0.08)
-    geom_errorbar(aes(ymin = avg - se, ymax = avg + se), width = 0.08, linewidth = 0.8) +
-
-    # X 軸擠壓 (維持 5:4 視覺感)
-    scale_x_discrete(expand = expansion(mult = c(0.35, 0.35))) +
-
-    # 【修改 2】Y 軸上方留白增加到 30% (mult = 0.30)，防止星星被切掉
-    scale_y_continuous(breaks = breaks_seq, limits = range(breaks_seq), expand = expansion(mult = c(0.05, 0.30))) +
-    scale_color_manual(values = my_colors, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
-    scale_shape_manual(values = my_shapes, labels = c("placebo" = "Placebo", "PS150" = "PS150")) +
-    labs(title = m, subtitle = "Mean ± SEM", x = NULL, y = "Score") +
-    theme_classic() +
-    theme(
-      # 標題
-      plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
-      plot.subtitle = element_text(size = 12, color = "gray30"),
-
-      # 【修改 3】XY軸文字放大兩號
-      axis.title.y = element_text(size = 18, face = "bold", margin = margin(r = 10)), # Y軸標題
-      axis.text = element_text(size = 16, color = "black", face = "bold"), # 刻度文字(Pre/Post & 數字)
-
-      # 圖例
-      legend.position = c(0.95, 0.98),
-      legend.justification = c("right", "top"),
-      legend.background = element_rect(fill = "white", color = "black", linewidth = 0.2),
-      legend.title = element_blank(),
-      legend.text = element_text(size = 14) # 圖例文字也稍微放大
-    )
-
-  # 4. 加入顯著性標記
-  # 注意：這裡使用 vjust = -1 讓符號離 Error Bar 遠一點點，避免重疊
-  p_anno <- p_base +
-    geom_text(aes(label = label_placebo, y = avg + se), vjust = -1, size = 8, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
-    geom_text(aes(label = label_PS150, y = avg + se), vjust = -1, size = 7, fontface = "bold", show.legend = FALSE, na.rm = TRUE) +
-    geom_text(data = df_sum %>% filter(!is.na(label_AB)), aes(label = label_AB, x = time, y = plot_max), color = "black", vjust = 1, size = 6, show.legend = FALSE, na.rm = TRUE) +
-    labs(subtitle = "Mean ± SEM (*:placebo intra, #:PS150 intra, $:placebo vs PS150)")
-
-  # 5. 存檔 (直式 4:5)
-  ggsave(filename = file.path(path_trend_anno, paste0(m, "_Trend_Annotated.png")), plot = p_anno, width = 4, height = 5, dpi = 300, bg = "white")
-  ggsave(filename = file.path(path_trend_pure, paste0(m, "_Trend_Pure.png")), plot = p_base, width = 4, height = 5, dpi = 300, bg = "white")
-}
-
-message("繪圖完成！請檢查輸出資料夾。")
-
-
-# ==============================================================================
-# === 10. 差值圖 (Bar Only) - Annotated & Pure 版本 =======
-# ==============================================================================
-message("--- 繪製差值圖 (Annotated & Pure) ---")
-
-# 1. 設定並建立新資料夾
-path_diff_anno <- file.path(plot_base_path, "Que_Diff_Annotated")
-path_diff_pure <- file.path(plot_base_path, "Que_Diff_Pure")
-
-if (!dir.exists(path_diff_anno)) dir.create(path_diff_anno, recursive = TRUE)
-if (!dir.exists(path_diff_pure)) dir.create(path_diff_pure, recursive = TRUE)
-
-# 2. 定義顯著性檢查函數 (使用 diff_t_results_df)
 check_diff_sig <- function(msr) {
   if (!exists("diff_t_results_df") || nrow(diff_t_results_df) == 0) {
     return(FALSE)
   }
   res <- diff_t_results_df %>% filter(measure == msr)
-  # 若 p < 0.05 回傳 TRUE
   if (nrow(res) > 0 && !is.na(res$p) && res$p < 0.05) {
     return(TRUE)
   }
   return(FALSE)
 }
 
-# 3. 開始繪圖迴圈
+# ==============================================================================
+# === 9. 繪圖：趨勢圖 (Trend Plot) - 終極穩定版 =====
+# ==============================================================================
+message("--- 繪製趨勢圖 (Line Plot Tool) ---")
+
+# 設定很寬的距離讓兩組徹底分開
+my_dodge_w <- 0.4
+
+plot_summary <- long_data %>%
+  filter(Group %in% c("placebo", "PS150"), time %in% c("Pre", "Post")) %>%
+  group_by(Group, measure, time) %>%
+  summarise(avg = mean(score, na.rm = T), sd = sd(score, na.rm = T), n = n(), se = sd / sqrt(n), .groups = "drop") %>%
+  mutate(
+    time = factor(time, levels = c("Pre", "Post")),
+    Group = factor(Group, levels = c("placebo", "PS150")),
+    week_numeric = ifelse(time == "Pre", 1, 2)
+  )
+
+for (m in unique(plot_summary$measure)) {
+  df_sum <- plot_summary %>% filter(measure == m)
+  if (nrow(df_sum) == 0) next
+
+  df_sum <- df_sum %>%
+    mutate(
+      label_time = case_when(
+        Group == Group_A & time == "Post" & check_intra(Group_A, m) ~ "*",
+        Group == Group_B & time == "Post" & check_intra(Group_B, m) ~ "#",
+        TRUE ~ NA_character_
+      ),
+      # $ 標記只放一組，避免 Bracket 重複
+      label_AB = case_when(
+        Group == Group_A & time == "Pre" & check_inter(m, "_pre") ~ "$",
+        Group == Group_A & time == "Post" & check_inter(m, "_post") ~ "$",
+        TRUE ~ NA_character_
+      )
+    )
+
+  # 呼叫已經恢復 15% 比例限制的 scale 計算
+  scale_info <- calc_dynamic_y_scale(df_sum, error_ratio = 0.15)
+
+  suppressMessages(suppressWarnings({
+    p_base <- create_flexible_line_plot(
+      df_s = df_sum, y_breaks = scale_info$breaks, y_limits = scale_info$limits,
+      title_text = m, y_label = "Score", color_pal = my_colors, shape_pal = my_shapes,
+      # 傳入 0.4 寬度
+      dodge_w = my_dodge_w,
+      x_label = NULL # 【修正 1】: 將 x_label 設為 NULL，去除 X 軸大標題
+    ) +
+      scale_x_continuous(breaks = c(1, 2), labels = c("Pre", "Post"), expand = expansion(mult = 0.35))
+    # 【修正 2】: 移除此處多餘的 labs(x = "Time")，否則會覆蓋 tool 中的設定
+
+    p_anno <- add_annotations_flexible(
+      p = p_base, df_s = df_sum, scale_info = scale_info,
+      # 傳入相同的 0.4 寬度，數學公式會自動計算 W/4 完美鎖定
+      dodge_w = my_dodge_w
+      # 【修正 3】: 移除 size_star, size_pound, size_dollar, y_offset_row1, y_gap_rows 這些在 tool 裡已經有預設值的參數。
+      # 這樣未來要改大小，只要去 tool.R 改一次就好，不用所有腳本都改。
+    )
+  }))
+
+  ggsave(filename = file.path(path_trend_anno, paste0(m, "_Trend_Annotated.png")), plot = p_anno, width = 4, height = 5, dpi = 300, bg = "white")
+  ggsave(filename = file.path(path_trend_pure, paste0(m, "_Trend_Pure.png")), plot = p_base, width = 4, height = 5, dpi = 300, bg = "white")
+}
+# ==============================================================================
+# === 10. 差值圖 (Bar Only) - 採用 Bar Plot Tool =======
+# ==============================================================================
+message("--- 繪製差值圖 (Bar Plot Tool) ---")
+
 for (m in unique(diff_stats$measure)) {
-  # 準備數據
+  # 1. 準備數據並轉換為 Bar Plot Tool 可讀格式
   df_bar <- diff_stats %>%
     filter(measure == m) %>%
-    mutate(Group = factor(Group, levels = c("placebo", "PS150")))
+    mutate(
+      Group = factor(Group, levels = c("placebo", "PS150")),
+      # 創建一個虛擬 X 軸
+      Stage = "Delta",
+      # 差值圖只標記組間差異，因此利用 Bar Tool 的 label_Bet 來印出 "*"
+      label_Bet = ifelse(check_diff_sig(m), "*", NA)
+    )
 
   if (nrow(df_bar) == 0) next
 
-  # 顯著性判斷
-  is_sig <- check_diff_sig(m)
+  # 2. 呼叫 Bar Plot Tool 運算與繪圖
+  scale_info_bar <- calc_dynamic_y_scale_bar(df_bar, y_col = "mean_diff", err_col = "se_diff")
 
-  # 計算 Y 軸範圍 (包含正負 Error Bar)
-  vals <- c(df_bar$mean_diff + df_bar$se_diff, df_bar$mean_diff - df_bar$se_diff)
-  raw_max <- max(vals, na.rm = TRUE)
-  raw_min <- min(vals, na.rm = TRUE)
+  p_base_bar <- create_flexible_bar_plot(
+    df = df_bar, x_col = "Stage", y_col = "mean_diff", err_col = "se_diff", group_col = "Group",
+    scale_info = scale_info_bar, title_text = paste(m, "- Difference"),
+    y_label = "Difference Score", x_label = NULL, color_pal = my_colors,
+    plot_ratio = 1.25 # 【關鍵修改】：Y:X = 5:4 (即 5/4 = 1.25)，讓兩根柱子看起來比例完美
+  ) +
+    # 隱藏虛擬的 X 軸文字 "Delta" 讓圖面更乾淨
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
 
-  # 為了畫 "ㄇ" 型標記線，需要找出兩組 Bar 的最高點
-  top_y <- max(df_bar$mean_diff + df_bar$se_diff, na.rm = TRUE)
-  # 若所有數值都小於 0，基準線設為 0
-  if (top_y < 0) top_y <- 0
-
-  # 設定標記線的高度 (比最高點再高 10%)
-  bracket_y <- top_y + (abs(raw_max - raw_min) * 0.1)
-  # 若數據變異太小，給個基本高度
-  if (bracket_y == top_y) bracket_y <- top_y + 0.5
-
-  # 星號高度 (比標記線再高一點)
-  star_y <- bracket_y + (abs(raw_max - raw_min) * 0.05)
-
-  # --- [共用基底圖層] ---
-  p_base <- ggplot(df_bar, aes(x = Group, y = mean_diff, fill = Group)) +
-    # Y=0 參考虛線
-    geom_hline(yintercept = 0, linetype = "dashed", color = "gray30", linewidth = 1) +
-
-    # Bar 本體
-    geom_bar(stat = "identity", width = 0.6, alpha = 0.85, color = "black") +
-
-    # Error Bar
-    geom_errorbar(aes(ymin = mean_diff - se_diff, ymax = mean_diff + se_diff),
-      width = 0.2, linewidth = 0.8
-    ) +
-    scale_fill_manual(values = my_colors) +
-    scale_y_continuous(expand = expansion(mult = c(0.1, 0.2))) + # 上下留白
-
-    theme_classic() +
-    theme(
-      plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
-      plot.subtitle = element_text(size = 12, color = "gray30", hjust = 0.5),
-      axis.title.y = element_text(size = 16, face = "bold", margin = margin(r = 10)),
-      axis.text = element_text(size = 14, color = "black", face = "bold"),
-      legend.position = "none" # 差值圖不需要圖例，X軸已經有 A/B
-    )
-
-  # --- [A. Annotated 版本] (加上顯著性標記) ---
-  p_anno <- p_base +
-    labs(
-      title = paste0(m, " - Change"),
-      subtitle = "Mean ± SEM | *: Sig Diff (p<0.05)",
-      y = "Difference Score", x = NULL
-    )
-
-  # 若顯著，畫上 "ㄇ" 型線與星星
-  if (is_sig) {
-    p_anno <- p_anno +
-      # 橫線
-      geom_segment(aes(x = 1, xend = 2, y = bracket_y, yend = bracket_y),
-        color = "black", linewidth = 0.8
-      ) +
-      # 星號 (置中)
-      annotate("text",
-        x = 1.5, y = star_y, label = "*",
-        size = 8, fontface = "bold"
-      )
-  }
-
-  ggsave(
-    filename = file.path(path_diff_anno, paste0(m, "_Diff_Bar_Anno.png")),
-    plot = p_anno, width = 5, height = 6, dpi = 300, bg = "white"
+  # 加上標註
+  p_anno_bar <- add_annotations_bar(
+    p = p_base_bar, df = df_bar, x_col = "Stage", y_col = "mean_diff", err_col = "se_diff", group_col = "Group",
+    scale_info = scale_info_bar, groupA_name = Group_A, groupB_name = Group_B,
+    size_dollar = 8, y_gap_rows = 0.08 # 因為這裡用的是 label_Bet 畫 *, 可以放大一點
   )
 
-  # --- [B. Pure 版本] (無標記) ---
-  p_pure <- p_base +
-    labs(title = m, subtitle = NULL, y = "Difference Score", x = NULL)
-
-  ggsave(
-    filename = file.path(path_diff_pure, paste0(m, "_Diff_Bar_Pure.png")),
-    plot = p_pure, width = 5, height = 6, dpi = 300, bg = "white"
-  )
+  # 3. 存檔
+  ggsave(filename = file.path(path_diff_anno, paste0(m, "_Diff_Bar_Anno.png")), plot = p_anno_bar, width = 5, height = 6, dpi = 300, bg = "white")
+  ggsave(filename = file.path(path_diff_pure, paste0(m, "_Diff_Bar_Pure.png")), plot = p_base_bar, width = 5, height = 6, dpi = 300, bg = "white")
 }
 
-message("差值圖繪製完成！\n路徑 1: ", path_diff_anno, "\n路徑 2: ", path_diff_pure)
+message("\n🎉 所有問卷圖表繪製完成！已全面套用標準化繪圖工具！")
+
+# View(df_sum)

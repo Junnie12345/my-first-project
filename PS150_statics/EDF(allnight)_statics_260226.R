@@ -13,7 +13,7 @@ library(broom)
 data_path <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\EDF_result(allnight)_2601124_clean.xlsx"
 info_path <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026\\受試者進度紀錄與基本資料260117_shift.xlsx"
 output_folder <- "C:\\Users\\ngps9\\OneDrive\\onedrive\\桌面\\PS150_results\\2026"
-output_file <- file.path(output_folder, "Allnight_statics_260204.xlsx")
+output_file <- file.path(output_folder, "Allnight_statics_260303.xlsx")
 
 if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
@@ -483,131 +483,107 @@ for (m in all_measures_full) {
 }
 
 # ==================================
-# ==== 8. 繪製長條圖 (Annotated) ====
+# ==== 8. 繪製長條圖 (使用動態 Bar Plot Tool) ====
 # ==================================
-message("繪製長條圖 (Annotated Delta with *, #, $)...")
+message("繪製長條圖 (Annotated Delta, Pre, Post with *, #, $)...")
 
-create_base_bar <- function(data, y_var, title, y_lab) {
-  ggplot(data, aes(x = Stage, y = .data[[y_var]], fill = Group)) +
-    geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.7, color = "black") +
+# 載入我們強大的柱狀圖工具包 (請確保此路徑與檔案內容是我們剛剛最新修改的完美版)
+source("C:\\github\\my-first-project\\my-first-project\\PS150_statics\\functioin\\Bar_plot_tool.R")
 
-    # 【修正 1】將 error bar 的寬度 (width) 從 0.25 改小為 0.15，視覺上會更精緻
-    geom_errorbar(aes(ymin = .data[[y_var]] - se, ymax = .data[[y_var]] + se),
-      position = position_dodge(width = 0.7), # 注意：這裡要跟 bar 的 width=0.7 一致或接近，才能對齊中心
-      width = 0.15, linewidth = 0.7
-    ) +
-    scale_fill_manual(values = my_fill) +
-    labs(title = title, y = y_lab, x = "Sleep Stage") +
-    theme_classic() +
-    theme(
-      plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
-      axis.text.x = element_text(size = 12, color = "black"),
-      axis.text.y = element_text(size = 12),
-      legend.position = "top", aspect.ratio = 0.6
-    )
-  # 注意：移除了這裡的 scale_y_continuous，改在迴圈內動態設定，以免限制住星星
-}
+group_names <- levels(long_data$Group)
+Group_A <- group_names[1] 
+Group_B <- group_names[2]
 
 for (metric in all_metrics) {
   safe_metric_name <- gsub("%", "pct", metric)
   safe_metric_name <- gsub("[^A-Za-z0-9_]", "", safe_metric_name)
+  
+  # 保留自動判斷單位的設定
   y_unit <- get_y_unit_simple(metric)
-
-  # ... (Pre 和 Post 的部分略過不變，若有需要也可以套用類似邏輯) ...
-
-  # ---- 8.3 Delta Bar Plot (關鍵修正) ----
+  
+  # ---------------------------------------------------------
+  # --- 1. Delta Plot (差值圖) ---
+  # ---------------------------------------------------------
   dat_delta <- plot_df_delta %>% filter(Metric == metric)
-
   if (nrow(dat_delta) > 0) {
-    # 1. 先建立基礎圖
-    p_delta <- create_base_bar(dat_delta, "mean", paste(metric, "- Difference"), y_unit) +
-      geom_hline(yintercept = 0, linetype = "dashed", color = "gray50")
-
-    # 2. 準備數據與計算範圍
-    dat_delta_p <- dat_delta %>% left_join(p_map, by = c("Metric", "Stage"))
-
-    # 計算資料本身的最高點 (Bar + ErrorBar)
-    data_max_y <- max(dat_delta$mean + dat_delta$se, na.rm = TRUE)
-    data_min_y <- min(dat_delta$mean - dat_delta$se, na.rm = TRUE)
-
-    # 計算資料全距 (Range)，用來決定 buffer 要多大 (例如全距的 10%)
-    # 這樣無論數據是 0.1 還是 100，距離都會很剛好
-    y_range <- abs(data_max_y - data_min_y)
-    if (y_range == 0) y_range <- 1 # 避免除以0
-
-    buffer_small <- y_range * 0.05 # 星星離 Bar 的距離
-    buffer_step <- y_range * 0.10 # 不同層級標記的間隔
-
-    # 3. 準備標記資料
-
-    # placebo 組 (*)
-    anno_placebo <- dat_delta_p %>%
-      filter(Group == "placebo", p_within_A < 0.05) %>%
+    # 合併 P 值地圖，並設定顯著性標記
+    dat_p_delta <- dat_delta %>% left_join(p_map, by = c("Metric", "Stage")) %>%
       mutate(
-        x_pos = as.numeric(Stage) - 0.2,
-        # 標記位置：Bar頂端 + 小緩衝
-        base_y = ifelse(mean + se > 0, mean + se, 0),
-        y_pos = base_y + buffer_small,
-        label = "*"
+        label_A = ifelse(Group == Group_A & p_within_A < 0.05, "*", NA),
+        label_B = ifelse(Group == Group_B & p_within_B < 0.05, "#", NA),
+        label_Bet = ifelse(p_delta_bet < 0.05, "$", NA)
       )
-
-    # PS150 組 (#)
-    anno_PS150 <- dat_delta_p %>%
-      filter(Group == "PS150", p_within_B < 0.05) %>%
-      mutate(
-        x_pos = as.numeric(Stage) + 0.2,
-        base_y = ifelse(mean + se > 0, mean + se, 0),
-        y_pos = base_y + buffer_small,
-        label = "#"
-      )
-
-    # 兩組比較 ($) - 放在更高的地方
-    anno_Bet <- dat_delta_p %>%
-      filter(p_delta_bet < 0.05) %>%
-      group_by(Stage) %>%
-      summarise(
-        # 找出該 Stage 兩組中較高的那個點
-        top_y_in_group = max(ifelse(mean + se > 0, mean + se, 0), na.rm = T),
-        label = "$", .groups = "drop"
-      ) %>%
-      mutate(
-        x_pos = as.numeric(Stage),
-        # 位置：最高點 + 2倍的間隔 (確保比 * # 高)
-        y_pos = top_y_in_group + (buffer_step * 2)
-      )
-
-    # 4. 【關鍵修正】計算最終需要的 Y 軸上限
-    # 找出「資料最高點」和「所有標記最高點」之中的最大值
-    max_anno_y <- -Inf
-    if (nrow(anno_placebo) > 0) max_anno_y <- max(max_anno_y, max(anno_placebo$y_pos))
-    if (nrow(anno_PS150) > 0) max_anno_y <- max(max_anno_y, max(anno_PS150$y_pos))
-    if (nrow(anno_Bet) > 0) max_anno_y <- max(max_anno_y, max(anno_Bet$y_pos))
-
-    # 如果完全沒有顯著標記，就用資料最高點
-    final_top_y <- max(data_max_y, max_anno_y)
-
-    # 為了美觀，再往上多加 10% 的留白，確保不會切到字
-    final_limit_max <- final_top_y + (y_range * 0.15)
-
-    # 確保下限也夠 (如果數據都是負的)
-    final_limit_min <- min(data_min_y, 0) - (y_range * 0.05)
-
-    # 5. 繪圖並加上限制
-    p_delta_final <- p_delta +
-      # 強制設定 Y 軸範圍，解決「碰壁」問題
-      coord_cartesian(ylim = c(final_limit_min, final_limit_max))
-
-    # 加上標記
-    if (nrow(anno_placebo) > 0) p_delta_final <- p_delta_final + geom_text(data = anno_placebo, aes(x = x_pos, y = y_pos, label = label), inherit.aes = F, size = 6, fontface = "bold")
-    if (nrow(anno_PS150) > 0) p_delta_final <- p_delta_final + geom_text(data = anno_PS150, aes(x = x_pos, y = y_pos, label = label), inherit.aes = F, size = 5, fontface = "bold", color = "black")
-    if (nrow(anno_Bet) > 0) p_delta_final <- p_delta_final + geom_text(data = anno_Bet, aes(x = x_pos, y = y_pos, label = label), inherit.aes = F, size = 6, fontface = "bold")
-
-    # 儲存
-    ggsave(file.path(dir_anno$delta, paste0("Delta_", safe_metric_name, ".png")), p_delta_final, width = 7, height = 5)
-
-    # 另外存一張 Pure 版 (也要套用比較好看的 Error bar)
-    ggsave(file.path(dir_pure$delta, paste0("Delta_", safe_metric_name, ".png")), p_delta, width = 7, height = 5)
+    
+    # 呼叫工具包計算 Y 軸刻度
+    scale_info_delta <- calc_dynamic_y_scale_bar(dat_p_delta, y_col = "mean", err_col = "se")
+    
+    # 繪製基礎圖 (無標記)
+    p_base_delta <- create_flexible_bar_plot(
+      df = dat_p_delta, x_col = "Stage", y_col = "mean", err_col = "se", group_col = "Group",
+      scale_info = scale_info_delta, title_text = paste(metric, "- Difference"), 
+      y_label = y_unit, x_label = "Sleep Stage", color_pal = my_fill
+    )
+    
+    # 加上自動避讓標記 (不傳入 anno_subtitle 即可隱藏副標題)
+    p_anno_delta <- add_annotations_bar(
+      p = p_base_delta, df = dat_p_delta, x_col = "Stage", y_col = "mean", err_col = "se", group_col = "Group",
+      scale_info = scale_info_delta, groupA_name = Group_A, groupB_name = Group_B
+    )
+    
+    # 存檔
+    ggsave(file.path(dir_pure$delta, paste0("Delta_", safe_metric_name, ".png")), p_base_delta, width = 8, height = 5, bg="white")
+    ggsave(file.path(dir_anno$delta, paste0("Delta_", safe_metric_name, ".png")), p_anno_delta, width = 8, height = 5, bg="white")
+  }
+  
+  # ---------------------------------------------------------
+  # --- 2. Pre Plot (前測圖) ---
+  # ---------------------------------------------------------
+  dat_pre <- plot_df_basic %>% filter(Metric == metric, Trail == "Pre")
+  if (nrow(dat_pre) > 0) {
+    dat_p_pre <- dat_pre %>% left_join(p_map, by = c("Metric", "Stage")) %>%
+      mutate(label_Bet = ifelse(p_pre_bet < 0.05, "$", NA))
+    
+    scale_info_pre <- calc_dynamic_y_scale_bar(dat_p_pre, y_col = "mean", err_col = "se")
+    
+    p_base_pre <- create_flexible_bar_plot(
+      df = dat_p_pre, x_col = "Stage", y_col = "mean", err_col = "se", group_col = "Group",
+      scale_info = scale_info_pre, title_text = paste(metric, "- Pre Test"), 
+      y_label = y_unit, x_label = "Sleep Stage", color_pal = my_fill
+    )
+    
+    p_anno_pre <- add_annotations_bar(
+      p = p_base_pre, df = dat_p_pre, x_col = "Stage", y_col = "mean", err_col = "se", group_col = "Group",
+      scale_info = scale_info_pre, groupA_name = Group_A, groupB_name = Group_B
+    )
+    
+    ggsave(file.path(dir_pure$pre, paste0("Pre_", safe_metric_name, ".png")), p_base_pre, width = 8, height = 5, bg="white")
+    ggsave(file.path(dir_anno$pre, paste0("Pre_", safe_metric_name, ".png")), p_anno_pre, width = 8, height = 5, bg="white")
+  }
+  
+  # ---------------------------------------------------------
+  # --- 3. Post Plot (後測圖) ---
+  # ---------------------------------------------------------
+  dat_post <- plot_df_basic %>% filter(Metric == metric, Trail == "Post")
+  if (nrow(dat_post) > 0) {
+    dat_p_post <- dat_post %>% left_join(p_map, by = c("Metric", "Stage")) %>%
+      mutate(label_Bet = ifelse(p_post_bet < 0.05, "$", NA))
+    
+    scale_info_post <- calc_dynamic_y_scale_bar(dat_p_post, y_col = "mean", err_col = "se")
+    
+    p_base_post <- create_flexible_bar_plot(
+      df = dat_p_post, x_col = "Stage", y_col = "mean", err_col = "se", group_col = "Group",
+      scale_info = scale_info_post, title_text = paste(metric, "- Post Test"), 
+      y_label = y_unit, x_label = "Sleep Stage", color_pal = my_fill
+    )
+    
+    p_anno_post <- add_annotations_bar(
+      p = p_base_post, df = dat_p_post, x_col = "Stage", y_col = "mean", err_col = "se", group_col = "Group",
+      scale_info = scale_info_post, groupA_name = Group_A, groupB_name = Group_B
+    )
+    
+    ggsave(file.path(dir_pure$post, paste0("Post_", safe_metric_name, ".png")), p_base_post, width = 8, height = 5, bg="white")
+    ggsave(file.path(dir_anno$post, paste0("Post_", safe_metric_name, ".png")), p_anno_post, width = 8, height = 5, bg="white")
   }
 }
 
-cat("\n🎉 繪圖完成！已修正 Error Bar 寬度與邊界裁切問題。\n")
+cat("\n🎉 繪圖完成！所有 EDF 高品質長條圖已成功生成。\n")
